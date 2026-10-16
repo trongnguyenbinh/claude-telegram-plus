@@ -1163,6 +1163,85 @@ bot.use(async (ctx, next) => {
   })
 })
 
+// ---- telegram-plus: welcome new group members.
+// Telegram delivers the new_chat_members service message to every bot in the
+// group, privacy mode or not, admin or not (core.telegram.org/bots/features#privacy-mode).
+// Texts live in <STATE_DIR>/welcome.json ({"<chat_id>": "Chào {name} ..."}), re-read
+// on every join like access.json; no file or no key = no welcome. The server
+// sends it itself; Claude is not involved. Only allowlisted groups.
+const WELCOME_FILE = join(STATE_DIR, 'welcome.json')
+// Joins arriving close together become one message; at most one welcome per
+// group per cooldown. Env overrides exist for the offline tests.
+const WELCOME_DEBOUNCE_MS = Number(process.env.TELEGRAM_PLUS_WELCOME_DEBOUNCE_MS ?? 3000)
+const WELCOME_COOLDOWN_MS = Number(process.env.TELEGRAM_PLUS_WELCOME_COOLDOWN_MS ?? 30000)
+const WELCOME_MAX_NAMES = 10
+
+type Joiner = { id: number; first_name: string; username?: string }
+const welcomeState = new Map<string, { pending: Joiner[]; last: number; timer?: ReturnType<typeof setTimeout> }>()
+
+function welcomeText(chatId: string): string | undefined {
+  try {
+    const t = (JSON.parse(readFileSync(WELCOME_FILE, 'utf8')) as Record<string, unknown>)[chatId]
+    return typeof t === 'string' && t.trim() ? t : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Fill {name} with the joiners and mark each name as a text_mention entity.
+// Entities instead of HTML/MarkdownV2: names are user-controlled and need no
+// escaping this way. Offsets are UTF-16 units, which is what JS indexes.
+function renderWelcome(template: string, people: Joiner[]): { text: string; entities: Record<string, unknown>[] } {
+  const shown = people.slice(0, WELCOME_MAX_NAMES)
+  const rest = people.length - shown.length
+  const labels = shown.map(p => (p.username ? `@${p.username}` : p.first_name).replace(/[\r\n]+/g, ' ').slice(0, 64))
+  let text = ''
+  const entities: Record<string, unknown>[] = []
+  const parts = template.split('{name}')
+  parts.forEach((part, i) => {
+    text += part
+    if (i === parts.length - 1) return
+    shown.forEach((p, j) => {
+      if (j > 0) text += j === shown.length - 1 && rest === 0 ? ' và ' : ', '
+      entities.push({ type: 'text_mention', offset: text.length, length: labels[j].length, user: { id: p.id, is_bot: false, first_name: p.first_name } })
+      text += labels[j]
+    })
+    if (rest > 0) text += ` và ${rest} người khác`
+  })
+  return { text, entities }
+}
+
+async function flushWelcome(chatId: string): Promise<void> {
+  const st = welcomeState.get(chatId)
+  if (!st) return
+  st.timer = undefined
+  const people = st.pending.splice(0)
+  const template = welcomeText(chatId)
+  if (!people.length || !template || !(chatId in loadAccess().groups)) return
+  const { text, entities } = renderWelcome(template, people)
+  st.last = Date.now()
+  await bot.api.sendMessage(chatId, text, { entities } as never).catch(err => {
+    process.stderr.write(`telegram channel: welcome to ${chatId} failed: ${err}\n`)
+  })
+}
+
+bot.on('message:new_chat_members', async ctx => {
+  const chatId = String(ctx.chat.id)
+  const access = loadAccess()
+  if (access.dmPolicy === 'disabled' || !(chatId in access.groups)) return
+  if (!welcomeText(chatId)) return
+  const humans = ctx.message.new_chat_members.filter(u => !u.is_bot)
+  if (!humans.length) return
+  const st = welcomeState.get(chatId) ?? { pending: [], last: 0 }
+  welcomeState.set(chatId, st)
+  for (const u of humans) {
+    if (!st.pending.some(p => p.id === u.id)) st.pending.push({ id: u.id, first_name: u.first_name, username: u.username })
+  }
+  if (st.timer) return
+  const at = Math.max(Date.now() + WELCOME_DEBOUNCE_MS, st.last + WELCOME_COOLDOWN_MS)
+  st.timer = setTimeout(() => { void flushWelcome(chatId) }, at - Date.now())
+})
+
 bot.on('message:text', async ctx => {
   await handleInbound(ctx, ctx.message.text, undefined)
 })

@@ -8,12 +8,20 @@
 // <your_user_id> (and test_group_id under "groups" if given). For the group
 // ephemeral check the test bot must be an admin of that test group.
 // Watch your phone; button presses and Stop presses are printed for 60s.
+//
+// Welcome check (new group members), bot WITHOUT admin rights, privacy mode on:
+//   TELEGRAM_STATE_DIR=~/.claude/channels/telegram-test \
+//     bun scripts/smoke-real.ts <your_user_id> <test_group_id> --welcome
+// Writes a test welcome.json into the TEST state dir if none exists, skips the
+// other steps, then waits 90s: add someone (a second account) to the test group.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
-const [user, group] = process.argv.slice(2)
+const welcomeOnly = process.argv.includes('--welcome')
+const [user, group] = process.argv.slice(2).filter(a => a !== '--welcome')
 const state = process.env.TELEGRAM_STATE_DIR
 if (!user || !state) {
   console.error('usage: TELEGRAM_STATE_DIR=<test bot state dir> bun scripts/smoke-real.ts <user_id> [group_id]')
@@ -22,6 +30,17 @@ if (!user || !state) {
 if (state.replace(/\/+$/, '') === join(homedir(), '.claude', 'channels', 'telegram')) {
   console.error('refusing: that is the main bot state dir; use a separate test bot')
   process.exit(2)
+}
+// A live poller on this state dir means a real session owns this bot: never test on it.
+try {
+  const pid = parseInt(readFileSync(join(state, 'bot.pid'), 'utf8'), 10)
+  if (pid > 1) { process.kill(pid, 0); console.error(`refusing: bot.pid ${pid} is alive, a session is using this bot`); process.exit(2) }
+} catch {}
+if (welcomeOnly) {
+  if (!group) { console.error('--welcome needs <test_group_id>'); process.exit(2) }
+  const f = join(state, 'welcome.json')
+  if (!existsSync(f)) writeFileSync(f, JSON.stringify({ [group]: '🧪 Smoke welcome: chào {name}!' }, null, 2) + '\n')
+  console.log(`welcome.json: ${readFileSync(f, 'utf8').trim()}`)
 }
 
 const client = new Client({ name: 'smoke-real', version: '0' })
@@ -41,6 +60,12 @@ async function step(name: string, tool: string, args: Record<string, unknown>) {
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+if (welcomeOnly) {
+  console.log('now add a member to the test group; expect one welcome message within ~3s (waiting 90s)')
+  await sleep(90000)
+  await client.close()
+  process.exit(0)
+}
 await step('plain reply (upstream path)', 'reply', { chat_id: user, text: 'telegram-plus smoke: plain text' })
 await step('draft thinking', 'stream_draft', { chat_id: user, draft_id: '42', text: '', can_stop: true })
 await sleep(2000)

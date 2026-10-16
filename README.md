@@ -20,8 +20,32 @@ arguments, every upstream tool sends the exact request it sent before:
 | `delete_message` | `deleteMessage` | all chats |
 | `reply` `effect_id`, `silent`; `react` `big` | `message_effect_id`, `disable_notification`, `is_big` | effects: private chats only |
 | `reply` `typewriter` (default from env `TELEGRAM_PLUS_TYPEWRITER=1`, off when unset): replays the first ~600 chars word by word in a draft (4-8 frames, ≤1.5s), then sends the real message unchanged | `sendMessageDraft` / `sendRichMessageDraft` | private chats, no files, not ephemeral; draft errors are ignored |
+| Welcome new group members: the server itself greets people who join an allowlisted group, using `<STATE_DIR>/welcome.json` (see below). Claude is not involved | `new_chat_members` service message, `sendMessage` + `text_mention` entities | allowlisted groups; works in privacy mode, no admin needed |
 | `TELEGRAM_API_ROOT` env | local Bot API server or the offline test mock | |
 | `hooks/telegram-progress.py` (optional Claude Code hook): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
+
+## Welcome new members
+
+Create `<STATE_DIR>/welcome.json` (same directory as `access.json`, default `~/.claude/channels/telegram`):
+
+```json
+{ "-1001234567890": "Chào {name}, ..." }
+```
+
+- The key is the group's chat_id. The group must also be in `access.json` `groups`.
+  No file, no key, or an empty text means no welcome.
+- `{name}` becomes `@username`, or the first name for people without one. Each name
+  is a clickable mention, sent as a `text_mention` entity: no parse mode, so names never
+  need escaping. Several joiners become `A, B và C`. With more than 10 people, the
+  first 10 are listed, then `và N người khác`.
+- The file is re-read on every join, like `access.json`, so edits apply without a
+  restart. It is deliberately separate from `access.json`, which is only edited from the terminal.
+- Bots that join are ignored. Joins within 3s are merged into one message, and each group
+  gets at most one welcome every 30s. Later joiners are queued for the next message,
+  not dropped.
+- Telegram sends the join service message to bots in privacy mode too, no admin rights needed
+  (core.telegram.org/bots/features#privacy-mode). The `chat_member` update is not used:
+  it needs admin rights and an explicit `allowed_updates`.
 
 ## Install, restore, update
 

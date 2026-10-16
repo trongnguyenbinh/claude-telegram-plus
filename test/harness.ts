@@ -112,7 +112,7 @@ export async function startHarness(extraEnv: Record<string, string> = {}) {
   await waitFor(() => calls.some(c => c.method === 'setMyCommands'))
 
   return {
-    calls, notes, knobs, client, waitFor,
+    calls, notes, knobs, client, waitFor, stateDir,
     async call(name: string, args: Record<string, unknown>) {
       const before = calls.length
       const t0 = Date.now()
