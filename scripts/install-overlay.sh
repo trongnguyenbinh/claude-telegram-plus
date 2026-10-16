@@ -47,10 +47,11 @@ cd "$REPO"
 installed_ver=$(python3 -c "import json;print(json.load(open('$TARGET/.claude-plugin/plugin.json'))['version'])")
 base_tag=$(git describe --tags --abbrev=0 --match 'upstream-*' upstream 2>/dev/null || echo upstream-0.0.7)
 fork_sha=$(git rev-parse --short HEAD)
+fork_ver=$(python3 -c "import json;print(json.load(open('package.json'))['version'])")
 dirty=$(git status --porcelain -- server.ts)
 
 echo "target:        $TARGET (plugin version $installed_ver)"
-echo "fork:          $fork_sha${dirty:+ (server.ts has uncommitted changes)}  base $base_tag"
+echo "fork:          $fork_ver $fork_sha${dirty:+ (server.ts has uncommitted changes)}  base $base_tag"
 
 if cmp -s "$TARGET/server.ts" server.ts; then
   echo "status:        already the fork's server.ts, nothing to do"; exit 0
@@ -74,7 +75,7 @@ ts=$(date +%Y%m%d-%H%M%S)
 mkdir -p "$BACKUPS/$ts"
 cp "$TARGET/server.ts" "$TARGET/.claude-plugin/plugin.json" "$BACKUPS/$ts/"
 cp server.ts "$TARGET/server.ts"
-printf 'fork=%s base=%s installed=%s at=%s\n' "$fork_sha" "$base_tag" "$installed_ver" "$ts" > "$TARGET/.telegram-plus"
+printf 'version=%s fork=%s base=%s installed=%s at=%s\n' "$fork_ver" "$fork_sha" "$base_tag" "$installed_ver" "$ts" > "$TARGET/.telegram-plus"
 echo "backup:        $BACKUPS/$ts"
 echo "done. Restart the telegram MCP server in each session (/mcp, or restart the session)."
 echo "rollback:      scripts/install-overlay.sh --rollback $BACKUPS/$ts"
