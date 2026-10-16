@@ -55,8 +55,12 @@ echo "fork:          $fork_sha${dirty:+ (server.ts has uncommitted changes)}  ba
 if cmp -s "$TARGET/server.ts" server.ts; then
   echo "status:        already the fork's server.ts, nothing to do"; exit 0
 fi
+target_blob=$(git hash-object "$TARGET/server.ts")
 if git show "$base_tag:server.ts" | cmp -s - "$TARGET/server.ts"; then
   echo "status:        target is pristine $base_tag, safe to overlay"
+elif prev=$(git log --format=%h main -- server.ts | while read -r c; do
+      [ "$(git rev-parse "$c:server.ts")" = "$target_blob" ] && { echo "$c"; break; }; done) && [ -n "$prev" ]; then
+  echo "status:        target is an older fork build ($prev), safe to update"
 else
   echo "status:        target server.ts is NOT $base_tag (plugin updated upstream, or edited)."
   echo "               Merge the new upstream first (RESTORE.md, section 3), or pass --force."

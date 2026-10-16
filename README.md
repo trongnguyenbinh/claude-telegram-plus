@@ -19,6 +19,7 @@ arguments, every upstream tool sends the exact request it sent before:
 | `stream_draft`: live typing preview, `''` = "Thinking…", optional Stop button (press arrives as `(stopped generation)`) | `sendMessageDraft`, `sendRichMessageDraft`, `stopped_message_generation` (9.5/10.1/10.3) | private chats; preview lasts about 30s, finish with `reply` |
 | `delete_message` | `deleteMessage` | all chats |
 | `reply` `effect_id`, `silent`; `react` `big` | `message_effect_id`, `disable_notification`, `is_big` | effects: private chats only |
+| `reply` `typewriter` (default from env `TELEGRAM_PLUS_TYPEWRITER=1`, off when unset): replays the first ~600 chars word by word in a draft (4-8 frames, ≤1.5s), then sends the real message unchanged | `sendMessageDraft` / `sendRichMessageDraft` | private chats, no files, not ephemeral; draft errors are ignored |
 | `TELEGRAM_API_ROOT` env | local Bot API server or the offline test mock | |
 | `hooks/telegram-progress.py` (optional Claude Code hook): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
 

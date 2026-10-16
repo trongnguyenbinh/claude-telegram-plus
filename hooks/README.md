@@ -21,6 +21,8 @@ Telegram draft (`sendMessageDraft`). Example:
   draft. The draft shows the last 3 steps.
 - Telegram tools themselves (`mcp__plugin_telegram_telegram__*`) are not narrated.
 - The draft disappears by itself when the bot sends the real reply, or after about 30s.
+- With the typewriter on (`TELEGRAM_PLUS_TYPEWRITER=1`), `reply` reuses the same draft_id (the
+  inbound message_id), so "⏳ Đang làm" turns into the answer being typed out.
 
 ## Safety
 
