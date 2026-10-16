@@ -1,0 +1,10 @@
+telegram-plus
+Copyright 2026 Edward Nguyen (modifications)
+
+This product is a modified version of the Telegram channel plugin for Claude Code
+("telegram", version 0.0.7) from https://github.com/anthropics/claude-plugins-official
+(path external_plugins/telegram, commit 1e96c6b0a0f06cad576086243f3d06397c4ddf44),
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Modified files carry "telegram-plus" markers next to each change. The unmodified
+upstream source is the first commit of this repository (tag upstream-0.0.7).

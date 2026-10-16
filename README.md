@@ -1,3 +1,43 @@
+# telegram-plus: fork of the official Claude Code Telegram plugin
+
+Private fork of `telegram@claude-plugins-official` v0.0.7
+([anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official),
+`external_plugins/telegram`, upstream commit `1e96c6b`), Apache-2.0, see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+The first commit (tag `upstream-0.0.7`, branch `upstream`) is the upstream code, verbatim.
+
+It adds Telegram Bot API 10.x features. **All of them are opt-in.** With none of the new
+arguments, every upstream tool sends the exact request it sent before:
+`scripts/test-upstream-compat.sh` runs those tests against the pristine upstream server.
+
+| Tool / option | Bot API | Where it works |
+|---|---|---|
+| `reply` / `edit_message` `format: "rich"`: Rich Messages (plain Markdown: headings, lists, task lists, tables, code, quotes, `<details>`, no escaping, 32768 chars) | `sendRichMessage`, `editMessageText.rich_message` (10.1) | all chats |
+| `reply` / `edit_message` `buttons`: inline keyboard with callback, url, copy-text buttons, `style` primary/success/danger. A press arrives in the session as `(button) <data>` with `callback_query_id` | `reply_markup`, `InlineKeyboardButton.style` (9.4), `copy_text` | all chats; presses accepted from the same people the inbound gate allows |
+| `reply` `ephemeral_for` (+ `callback_query_id`, `replace_callback_message`, `reply_to_ephemeral`): a message only one group member sees | `ephemeral_message_parameters` (10.2/10.3) | groups/supergroups; within 15s of the user's action, or any time if the bot is admin; delivery not guaranteed |
+| `edit_message` / `delete_message` with `ephemeral_for` | `editEphemeralMessageText`, `deleteEphemeralMessage` | groups |
+| incoming ephemeral messages and commands: delivered without needing a mention, with `ephemeral_message_id` | `Message.ephemeral_message_id` (10.2) | allowlisted groups |
+| `stream_draft`: live typing preview, `''` = "Thinking…", optional Stop button (press arrives as `(stopped generation)`) | `sendMessageDraft`, `sendRichMessageDraft`, `stopped_message_generation` (9.5/10.1/10.3) | private chats; preview lasts about 30s, finish with `reply` |
+| `delete_message` | `deleteMessage` | all chats |
+| `reply` `effect_id`, `silent`; `react` `big` | `message_effect_id`, `disable_notification`, `is_big` | effects: private chats only |
+| `TELEGRAM_API_ROOT` env | local Bot API server or the offline test mock | |
+
+## Install, restore, update
+
+See [RESTORE.md](./RESTORE.md). In short: `scripts/install-overlay.sh` (dry run), then `--apply`.
+
+## Tests and audit (offline, no real token)
+
+```bash
+bun install
+bun test                          # mock Bot API + real server.ts over MCP stdio
+scripts/test-upstream-compat.sh   # default behaviour == upstream
+gitleaks git --redact . && trufflehog git file://. --no-update --fail
+```
+
+---
+
+*Upstream README follows.*
+
 # Telegram
 
 Connect a Telegram bot to your Claude Code with an MCP server.
