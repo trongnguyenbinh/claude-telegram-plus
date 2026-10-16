@@ -63,6 +63,13 @@ spot. To see exactly what the fork changes:
 git diff upstream main -- server.ts
 ```
 
+## 3b. Progress hook (optional)
+
+The hook lives in this repo (`hooks/telegram-progress.py`), not in the plugin cache, so a
+plugin update does not remove it. It stays installed as long as the `PreToolUse` entry is in
+each session's `.claude/settings.local.json`. See [hooks/README.md](./hooks/README.md) for
+the JSON to install it and the steps to remove it. If the repo moves, update the path in those entries.
+
 ## 4. Fallback: run the fork as its own plugin
 
 This path is not recommended for the main sessions. It works, but:

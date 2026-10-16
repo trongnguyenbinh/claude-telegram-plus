@@ -4,3 +4,4 @@ node_modules/
 .env
 .env.*
 .upstream-server.ts
+__pycache__/

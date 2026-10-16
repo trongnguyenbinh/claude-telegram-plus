@@ -20,6 +20,7 @@ arguments, every upstream tool sends the exact request it sent before:
 | `delete_message` | `deleteMessage` | all chats |
 | `reply` `effect_id`, `silent`; `react` `big` | `message_effect_id`, `disable_notification`, `is_big` | effects: private chats only |
 | `TELEGRAM_API_ROOT` env | local Bot API server or the offline test mock | |
+| `hooks/telegram-progress.py` (optional Claude Code hook): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
 
 ## Install, restore, update
 
@@ -30,6 +31,7 @@ See [RESTORE.md](./RESTORE.md). In short: `scripts/install-overlay.sh` (dry run)
 ```bash
 bun install
 bun test                          # mock Bot API + real server.ts over MCP stdio
+python3 hooks/test_telegram_progress.py   # progress hook, mock Bot API
 scripts/test-upstream-compat.sh   # default behaviour == upstream
 gitleaks git --redact . && trufflehog git file://. --no-update --fail
 ```

@@ -1,0 +1,77 @@
+# telegram-progress hook
+
+A Claude Code `PreToolUse` hook that shows what the agent is doing as a live
+Telegram draft (`sendMessageDraft`). Example:
+
+```
+⏳ Đang làm:
+· Đọc file: server.ts
+· Bash: Kiểm agent rnd
+▸ Agent: Soát log herdr
+```
+
+## When it acts
+
+- Only when the **current turn started from a Telegram channel message**. It scans the
+  transcript tail for the latest turn start (`origin.kind == "channel"`, server
+  `plugin:telegram:telegram`). Terminal turns (`origin.kind == "human"`, `!cmd`),
+  task notifications and anything else: exit 0, nothing sent.
+- Only for **private chats** (chat_id > 0) listed in `allowFrom` of `access.json`.
+- `draft_id` = the Telegram `message_id` of that turn, so each request gets its own
+  draft. The draft shows the last 3 steps.
+- Telegram tools themselves (`mcp__plugin_telegram_telegram__*`) are not narrated.
+- The draft disappears by itself when the bot sends the real reply, or after about 30s.
+
+## Safety
+
+- Always exits 0 and prints nothing, so it can never block or alter a tool call.
+- At most one draft per second per bot. The steps still accumulate, so a throttled
+  step shows up in the next draft. State lives in `<state dir>/progress-hook.json`.
+- Network timeout 2s. Each step is cut to 80 chars, and token-, key- and
+  password-like strings are masked.
+- The token is read the same way `server.ts` reads it: `TELEGRAM_BOT_TOKEN` env, else
+  `$TELEGRAM_STATE_DIR/.env` (default `~/.claude/channels/telegram/.env`). The hook
+  never prints it.
+- Cost: about 60 ms per tool call (Python start included), measured on a 463 MB transcript, because it reads
+  only the tail.
+
+## Install (per session, in that project's `.claude/settings.local.json`)
+
+Merge this into the file's `hooks` object. Set `TELEGRAM_STATE_DIR` to the same
+directory the session's telegram plugin uses. Omit it for the default
+`~/.claude/channels/telegram`.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "TELEGRAM_STATE_DIR=/abs/path/to/state python3 /Users/trongnguyen/Code/claude-telegram-plus/hooks/telegram-progress.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Hooks in settings files are read at session start. Restart the session, or open
+`/hooks` to review, after editing.
+
+## Remove
+
+Delete that `PreToolUse` entry from the settings file and restart the session.
+`progress-hook.json` in the state dir can be deleted at any time.
+
+## Test (offline)
+
+```bash
+python3 hooks/test_telegram_progress.py
+```
+
+This uses a mock Bot API on localhost and a fake token in a temp dir.
