@@ -1,9 +1,16 @@
 # telegram-plus: fork of the official Claude Code Telegram plugin
 
-Private fork of `telegram@claude-plugins-official` v0.0.7
+Fork of `telegram@claude-plugins-official` v0.0.7
 ([anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official),
 `external_plugins/telegram`, upstream commit `1e96c6b`), Apache-2.0, see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 The first commit (tag `upstream-0.0.7`, branch `upstream`) is the upstream code, verbatim.
+
+<p align="center">
+  <img src="docs/img/rich-buttons.png" width="420" alt="Rich message with a table, task list, code block and inline buttons, sent by the reply tool">
+</p>
+
+One `reply` call: `format:"rich"` (heading, table, task list, code block with copy button) plus `buttons`
+(callback with `style`, `copy_text`, `url`).
 
 ## Quick start
 
@@ -55,6 +62,8 @@ arguments, every upstream tool sends the exact request it sent before:
 | `hooks/telegram-progress.py` (optional Claude Code hook): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
 
 ## Reply keyboard
+
+![Reply keyboard replacing the letter keyboard](docs/img/reply-keyboard.png)
 
 ```json
 { "chat_id": "123", "text": "Menu", "keyboard": [["Status", "Logs"], [{ "text": "Share location", "request_location": true }]],
