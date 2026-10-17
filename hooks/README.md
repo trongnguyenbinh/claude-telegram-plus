@@ -52,7 +52,7 @@ directory the session's telegram plugin uses. Omit it for the default
         "hooks": [
           {
             "type": "command",
-            "command": "TELEGRAM_STATE_DIR=/abs/path/to/state python3 /Users/trongnguyen/Code/claude-telegram-plus/hooks/telegram-progress.py",
+            "command": "TELEGRAM_STATE_DIR=/abs/path/to/state python3 /abs/path/to/claude-telegram-plus/hooks/telegram-progress.py",
             "timeout": 5
           }
         ]

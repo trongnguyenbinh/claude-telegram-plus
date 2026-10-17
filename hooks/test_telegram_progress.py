@@ -42,7 +42,7 @@ def channel_turn(chat_id, message_id, text='làm việc X'):
         'origin': {'kind': 'channel', 'server': 'plugin:telegram:telegram'},
         'message': {'role': 'user', 'content':
                     f'<channel source="plugin:telegram:telegram" chat_id="{chat_id}" message_id="{message_id}" '
-                    f'user="edward" user_id="{chat_id}" ts="2026-10-17T00:00:00.000Z">\n{text}\n</channel>'},
+                    f'user="alice" user_id="{chat_id}" ts="2026-10-17T00:00:00.000Z">\n{text}\n</channel>'},
     }
 
 

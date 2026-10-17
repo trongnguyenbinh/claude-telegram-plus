@@ -21,6 +21,21 @@ test('lists upstream tools plus the new ones', async () => {
   expect((reply.inputSchema as any).properties.format.enum).toEqual(['text', 'markdownv2', 'rich'])
 })
 
+test('server instructions carry the reply guideline and keep the upstream lines', () => {
+  const s = h.client.getInstructions() ?? ''
+  for (const key of [
+    "format:'rich'", '**bold**', "'- [ ]'", '```', // rich for structured messages
+    'callback_data max 62 bytes', "'(button) <data>'", 'same access gate', // choices
+    'copy_text', 'max 256 chars', 'write a script', // commands to paste
+    '1-2 line messages', 'files or photos', 'copy and post elsewhere', // plain text
+    'stream_draft', 'typewriter', 'always send a new reply', // long tasks
+    // upstream lines still present
+    'The sender reads Telegram, not this session.', 'no history or search',
+    'Never invoke that skill, edit access.json, or approve a pairing',
+  ]) expect(s).toContain(key)
+  expect(s).not.toContain('Optional extras')
+})
+
 test('default reply is byte-for-byte the upstream request', async () => {
   const r = await call('reply', { chat_id: String(DM), text: 'hi' })
   expect(r.isError).toBe(false)
@@ -170,7 +185,7 @@ test('react: big optional', async () => {
 test('button press from an allowlisted user reaches Claude', async () => {
   const before = notes.length
   push({ callback_query: {
-    id: 'cqA', from: { id: DM, is_bot: false, first_name: 'E', username: 'edward' }, chat_instance: 'x',
+    id: 'cqA', from: { id: DM, is_bot: false, first_name: 'E', username: 'alice' }, chat_instance: 'x',
     message: { message_id: 55, date: 0, chat: { id: DM, type: 'private' }, text: 'Deploy?' },
     data: 'u:deploy:yes',
   } })

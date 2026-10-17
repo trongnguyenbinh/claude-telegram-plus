@@ -5,6 +5,35 @@ Private fork of `telegram@claude-plugins-official` v0.0.7
 `external_plugins/telegram`, upstream commit `1e96c6b`), Apache-2.0, see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 The first commit (tag `upstream-0.0.7`, branch `upstream`) is the upstream code, verbatim.
 
+## Quick start
+
+Needs `bun`, `python3`, `git`, and the official plugin already set up
+(`/plugin install telegram@claude-plugins-official`, then the bot token and pairing, see the upstream README below).
+
+1. Clone:
+
+   ```bash
+   git clone https://github.com/trongnguyenbinh/claude-telegram-plus.git
+   cd claude-telegram-plus
+   ```
+
+2. Install (overlays the fork's `server.ts` onto the installed plugin, backs up the original, prints the rollback command; safe to re-run):
+
+   ```bash
+   scripts/install.sh
+   # optional: also turn on the progress hook + typewriter for one project
+   scripts/install.sh --project /abs/path/to/project [--state-dir ~/.claude/channels/telegram]
+   ```
+
+3. Restart each Telegram session so it loads the new server:
+
+   ```bash
+   claude --channels plugin:telegram@claude-plugins-official
+   ```
+
+Agents pick up a reply guideline (when to use rich messages, buttons, copy buttons, plain text)
+from the server's MCP instructions; nothing to configure. Details below.
+
 It adds Telegram Bot API 10.x features. **All of them are opt-in.** With none of the new
 arguments, every upstream tool sends the exact request it sent before:
 `scripts/test-upstream-compat.sh` runs those tests against the pristine upstream server.
@@ -49,13 +78,14 @@ Create `<STATE_DIR>/welcome.json` (same directory as `access.json`, default `~/.
 
 ## Install, restore, update
 
-See [RESTORE.md](./RESTORE.md). In short: `scripts/install-overlay.sh` (dry run), then `--apply`.
+`scripts/install.sh` runs the checks and `install-overlay.sh` for you. See [RESTORE.md](./RESTORE.md) for restore after a plugin update and rollback.
+By hand: `scripts/install-overlay.sh` (dry run), then `--apply`.
 
 ## Tests and audit (offline, no real token)
 
 ```bash
 bun install
-bun test                          # mock Bot API + real server.ts over MCP stdio
+bun test                          # mock Bot API + real server.ts over MCP stdio, install.sh in a sandbox
 python3 hooks/test_telegram_progress.py   # progress hook, mock Bot API
 scripts/test-upstream-compat.sh   # default behaviour == upstream
 gitleaks git --redact . && trufflehog git file://. --no-update --fail
