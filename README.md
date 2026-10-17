@@ -42,6 +42,7 @@ arguments, every upstream tool sends the exact request it sent before:
 |---|---|---|
 | `reply` / `edit_message` `format: "rich"`: Rich Messages (plain Markdown: headings, lists, task lists, tables, code, quotes, `<details>`, no escaping, 32768 chars) | `sendRichMessage`, `editMessageText.rich_message` (10.1) | all chats |
 | `reply` / `edit_message` `buttons`: inline keyboard with callback, url, copy-text buttons, `style` primary/success/danger. A press arrives in the session as `(button) <data>` with `callback_query_id` | `reply_markup`, `InlineKeyboardButton.style` (9.4), `copy_text` | all chats; presses accepted from the same people the inbound gate allows |
+| `reply` `keyboard` (+ `keyboard_options`), `remove_keyboard`, `force_reply`: reply keyboard under the input field, with text, contact, location, poll, users, chat and Web App buttons. A plain press arrives as a normal text message; request buttons arrive as `(contact) ...`, `(location) lat,lon`, `(poll) ...`, `(users_shared ...)`, `(chat_shared ...)`, `(web_app_data ...)` | `ReplyKeyboardMarkup`, `ReplyKeyboardRemove`, `ForceReply` | text buttons everywhere; request and Web App buttons in private chats only; one reply_markup per message, so never together with `buttons` |
 | `reply` `ephemeral_for` (+ `callback_query_id`, `replace_callback_message`, `reply_to_ephemeral`): a message only one group member sees | `ephemeral_message_parameters` (10.2/10.3) | groups/supergroups; within 15s of the user's action, or any time if the bot is admin; delivery not guaranteed |
 | `edit_message` / `delete_message` with `ephemeral_for` | `editEphemeralMessageText`, `deleteEphemeralMessage` | groups |
 | incoming ephemeral messages and commands: delivered without needing a mention, with `ephemeral_message_id` | `Message.ephemeral_message_id` (10.2) | allowlisted groups |
@@ -52,6 +53,26 @@ arguments, every upstream tool sends the exact request it sent before:
 | Welcome new group members: the server itself greets people who join an allowlisted group, using `<STATE_DIR>/welcome.json` (see below). Claude is not involved | `new_chat_members` service message, `sendMessage` + `text_mention` entities | allowlisted groups; works in privacy mode, no admin needed |
 | `TELEGRAM_API_ROOT` env | local Bot API server or the offline test mock | |
 | `hooks/telegram-progress.py` (optional Claude Code hook): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
+
+## Reply keyboard
+
+```json
+{ "chat_id": "123", "text": "Menu", "keyboard": [["Status", "Logs"], [{ "text": "Share location", "request_location": true }]],
+  "keyboard_options": { "resize": true, "one_time": true, "placeholder": "Pick one" } }
+```
+
+- Buttons are strings or `{text, style?, request_contact?, request_location?, request_poll?, request_users?, request_chat?, web_app?}`.
+  `request_users` / `request_chat` take the Bot API object and need a `request_id`; `web_app` takes an https URL.
+- `keyboard_options`: `resize`, `one_time`, `persistent`, `placeholder` (1-64 chars), `selective`.
+  `remove_keyboard: true` removes it; `force_reply: true` opens the reply box (placeholder and selective apply).
+- Telegram allows one `reply_markup` per message: combining `buttons` (inline) with `keyboard`, `remove_keyboard`
+  or `force_reply` is an error, and nothing is sent.
+- Request and Web App buttons work in private chats only (Bot API); the server refuses them for groups.
+  In groups use `selective` with `reply_to`. A plain press is an ordinary group message, so it passes the
+  usual gate: with `requireMention` it reaches Claude only if it is a reply to the bot or mentions it.
+- Inbound contact, location (and venue), poll, users_shared, chat_shared and web_app_data messages are
+  forwarded as one line of text, only from senders the gate allows.
+- Inline `buttons` stay the default for a choice inside one message. Use a reply keyboard for a fixed menu.
 
 ## Welcome new members
 

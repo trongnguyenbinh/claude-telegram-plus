@@ -440,6 +440,67 @@ function buildKeyboard(rows: unknown): { inline_keyboard: Record<string, unknown
   }
 }
 
+// telegram-plus: reply keyboard (ReplyKeyboardMarkup), ReplyKeyboardRemove and
+// ForceReply. Telegram takes one reply_markup per message, so these and the
+// inline `buttons` are mutually exclusive. request_* and web_app buttons work
+// in private chats only (Bot API docs); rejected up front for groups.
+const KEYBOARD_REQUESTS = ['request_contact', 'request_location', 'request_poll', 'request_users', 'request_chat', 'web_app'] as const
+
+const KEYBOARD_SCHEMA = {
+  type: 'array',
+  description: "Reply keyboard (replaces the user's letter keyboard): array of rows, each row an array of buttons, a button being a string or {text, style?, request_contact?, request_location?, request_poll? (true or {type:'quiz'|'regular'}), request_users? ({request_id, max_quantity?, ...}), request_chat? ({request_id, chat_is_channel, ...}), web_app? (https url)}. Pressing a plain button sends its text as a normal message; request_* buttons arrive as '(contact) ...', '(location) lat,lon', '(poll) ...', '(users_shared ...)', '(chat_shared ...)', '(web_app_data ...)'. request_* and web_app: private chats only. Not combinable with buttons.",
+  items: { type: 'array', items: {} },
+}
+
+function buildReplyMarkup(args: Record<string, unknown>, chatId: string): Record<string, unknown> | undefined {
+  const kinds = (['buttons', 'keyboard', 'remove_keyboard', 'force_reply'] as const)
+    .filter(k => args[k] != null && args[k] !== false)
+  if (kinds.length > 1) {
+    throw new Error(`only one of buttons, keyboard, remove_keyboard, force_reply per message (Telegram allows one reply_markup); got ${kinds.join(' + ')}`)
+  }
+  if (kinds[0] === 'buttons') return buildKeyboard(args.buttons)
+  if (!kinds.length) return undefined
+  const o = (args.keyboard_options ?? {}) as Record<string, unknown>
+  const placeholder = o.placeholder != null ? String(o.placeholder) : undefined
+  if (placeholder != null && (placeholder.length < 1 || placeholder.length > 64)) throw new Error('keyboard_options.placeholder must be 1-64 characters')
+  const selective = o.selective === true ? { selective: true } : {}
+  if (kinds[0] === 'remove_keyboard') return { remove_keyboard: true, ...selective }
+  if (kinds[0] === 'force_reply') return { force_reply: true, ...(placeholder ? { input_field_placeholder: placeholder } : {}), ...selective }
+
+  if (!Array.isArray(args.keyboard) || !args.keyboard.length) throw new Error('keyboard must be a non-empty array of rows')
+  const group = Number(chatId) < 0
+  const keyboard = args.keyboard.map(row => (Array.isArray(row) ? row : [row]).map((b: unknown) => {
+    const spec = (typeof b === 'string' ? { text: b } : b) as Record<string, unknown> | null
+    if (!spec || typeof spec.text !== 'string' || !spec.text) throw new Error('every keyboard button needs a non-empty text')
+    const out: Record<string, unknown> = { text: spec.text }
+    if (spec.style != null) {
+      if (!BUTTON_STYLES.has(String(spec.style))) throw new Error(`button style must be primary, success or danger: ${spec.style}`)
+      out.style = spec.style
+    }
+    const req = KEYBOARD_REQUESTS.filter(k => spec[k] != null && spec[k] !== false)
+    if (req.length > 1) throw new Error(`a keyboard button takes at most one of ${KEYBOARD_REQUESTS.join(', ')}: ${spec.text}`)
+    if (req.length && group) throw new Error(`${req[0]} buttons work in private chats only: ${spec.text}`)
+    const k = req[0]
+    if (k === 'request_contact' || k === 'request_location') out[k] = true
+    else if (k === 'request_poll') out[k] = typeof spec[k] === 'object' ? spec[k] : {}
+    else if (k === 'web_app') out[k] = typeof spec[k] === 'string' ? { url: spec[k] } : spec[k]
+    else if (k) {
+      const r = spec[k] as Record<string, unknown>
+      if (typeof r !== 'object' || !Number.isInteger(r.request_id)) throw new Error(`${k} needs {request_id: integer, ...}: ${spec.text}`)
+      out[k] = r
+    }
+    return out
+  }))
+  return {
+    keyboard,
+    ...(o.resize === true ? { resize_keyboard: true } : {}),
+    ...(o.one_time === true ? { one_time_keyboard: true } : {}),
+    ...(o.persistent === true ? { is_persistent: true } : {}),
+    ...(placeholder ? { input_field_placeholder: placeholder } : {}),
+    ...selective,
+  }
+}
+
 // ephemeral_for: show the message only to this user (groups/supergroups).
 // Without callback_query_id / reply_to_ephemeral the bot must be a group admin.
 function ephemeralParams(args: Record<string, unknown>): Record<string, unknown> {
@@ -567,6 +628,7 @@ const mcp = new Server(
       "- Choices for the user: add callback buttons (buttons: rows of {text, callback_data}; callback_data max 62 bytes). A press arrives as a <channel> message '(button) <data>' with callback_query_id. Treat it as that user's answer; it passed the same access gate as a typed message.",
       '- A command the user must paste and run themselves: add a copy_text button (max 256 chars). For a longer command, write a script and offer the short command that runs it.',
       "- Plain text (no format) for 1-2 line messages, for replies with files or photos, and for text the user will copy and post elsewhere (rich renders '- ' as bullets, which breaks the copy).",
+      "- Reply keyboard (keyboard, replaces the user's letter keyboard): only for a fixed menu the user reuses over several turns, mainly in a private chat. In a group pass keyboard_options.selective with reply_to so only that user sees it. Send remove_keyboard when the flow is done. Inline buttons stay the default for choices inside one message; never both in one message.",
       "- Long tasks in a private chat: stream_draft (empty text = 'Thinking…') or typewriter:true are optional live previews. When the task is done, always send a new reply so the user's device pings.",
       'Other extras: reply takes effect_id, silent, and ephemeral_for (group only: visible to one user; pass callback_query_id or reply_to_ephemeral when answering that user within 15s). delete_message removes a bot message. Env TELEGRAM_PLUS_TYPEWRITER=1 turns typewriter on by default.',
       '',
@@ -635,6 +697,26 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram Rich Message: plain Markdown (# headings, lists, - [ ] task lists, | tables |, ``` code, > quotes, <details>), no escaping, up to 32768 chars. Default: 'text' (plain, no escaping needed).",
           },
           buttons: BUTTONS_SCHEMA,
+          keyboard: KEYBOARD_SCHEMA,
+          keyboard_options: {
+            type: 'object',
+            description: 'For keyboard / remove_keyboard / force_reply: {resize?, one_time?, persistent?, placeholder? (1-64 chars, keyboard and force_reply), selective? (only the @mentioned users or the sender of reply_to)}.',
+            properties: {
+              resize: { type: 'boolean' },
+              one_time: { type: 'boolean' },
+              persistent: { type: 'boolean' },
+              placeholder: { type: 'string' },
+              selective: { type: 'boolean' },
+            },
+          },
+          remove_keyboard: {
+            type: 'boolean',
+            description: 'Remove the reply keyboard shown to the user (keyboard_options.selective to remove it for the @mentioned / replied-to user only).',
+          },
+          force_reply: {
+            type: 'boolean',
+            description: "Open the reply interface on this message, so the user's answer is a reply to it (reaches the bot in groups even in privacy mode). keyboard_options.placeholder / selective apply.",
+          },
           effect_id: {
             type: 'string',
             description: 'Message effect id (animated effect on send). Private chats only.',
@@ -781,7 +863,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
         // telegram-plus extras; all empty unless the caller passed them.
         const extras = sendExtras(args)
-        const keyboard = buildKeyboard(args.buttons)
+        const keyboard = buildReplyMarkup(args, chat_id)
         const effectId = args.effect_id != null ? String(args.effect_id) : undefined
         const replyEphemeral = args.reply_to_ephemeral != null ? Number(args.reply_to_ephemeral) : undefined
         const replyParams = (target: number | undefined) =>
@@ -1345,6 +1427,47 @@ bot.on('message:sticker', async ctx => {
     file_id: sticker.file_id,
     size: sticker.file_size,
   })
+})
+
+// ---- telegram-plus: answers from reply-keyboard request buttons (and the same
+// message types sent by hand). Forwarded as a short text line through the
+// normal gate. Names and data are sender-controlled: kept in content only,
+// never in meta.
+const oneLine = (s: string | undefined) => (s ?? '').replace(/[\r\n]+/g, ' ').trim()
+
+bot.on('message:contact', async ctx => {
+  const c = ctx.message.contact
+  const uid = c.user_id != null ? ` user_id=${c.user_id}` : ''
+  await handleInbound(ctx, `(contact) ${oneLine(`${c.first_name} ${c.last_name ?? ''}`)} ${c.phone_number}${uid}`, undefined)
+})
+
+// Also fires for venues, which carry a location.
+bot.on('message:location', async ctx => {
+  const l = ctx.message.location
+  const venue = ctx.message.venue ? ` ${oneLine(ctx.message.venue.title)}, ${oneLine(ctx.message.venue.address)}` : ''
+  await handleInbound(ctx, `(location) ${l.latitude},${l.longitude}${venue}`, undefined)
+})
+
+bot.on('message:poll', async ctx => {
+  const p = ctx.message.poll
+  await handleInbound(ctx, `(poll) ${oneLine(p.question)}: ${p.options.map(o => oneLine(o.text)).join(' | ')}`, undefined)
+})
+
+bot.on('message:users_shared', async ctx => {
+  const u = ctx.message.users_shared
+  const list = u.users.map(x => [x.user_id, x.username ? `@${x.username}` : '', oneLine(x.first_name)].filter(Boolean).join(' '))
+  await handleInbound(ctx, `(users_shared request_id=${u.request_id}) ${list.join(', ')}`, undefined)
+})
+
+bot.on('message:chat_shared', async ctx => {
+  const c = ctx.message.chat_shared
+  const extra = [c.username ? `@${c.username}` : '', oneLine(c.title)].filter(Boolean).join(' ')
+  await handleInbound(ctx, `(chat_shared request_id=${c.request_id}) ${c.chat_id}${extra ? ` ${extra}` : ''}`, undefined)
+})
+
+bot.on('message:web_app_data', async ctx => {
+  const w = ctx.message.web_app_data
+  await handleInbound(ctx, `(web_app_data ${oneLine(w.button_text)}) ${w.data}`, undefined)
 })
 
 type AttachmentMeta = {

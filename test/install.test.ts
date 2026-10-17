@@ -46,7 +46,7 @@ test('install.sh: overlays, prints backup + rollback + restart, re-run is a no-o
   const r = run()
   expect(r.code).toBe(0)
   expect(readFileSync(join(plugin, 'server.ts'), 'utf8')).toBe(FORK)
-  expect(readFileSync(join(plugin, '.telegram-plus'), 'utf8')).toContain('version=0.0.7-plus.3')
+  expect(readFileSync(join(plugin, '.telegram-plus'), 'utf8')).toContain(`version=${JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version}`)
   expect(backups()).toHaveLength(1)
   expect(r.out).toContain(`rollback:      ${REPO}/scripts/install-overlay.sh --rollback`)
   expect(r.out).toContain('claude --channels plugin:telegram@claude-plugins-official')

@@ -29,6 +29,7 @@ test('server instructions carry the reply guideline and keep the upstream lines'
     'copy_text', 'max 256 chars', 'write a script', // commands to paste
     '1-2 line messages', 'files or photos', 'copy and post elsewhere', // plain text
     'stream_draft', 'typewriter', 'always send a new reply', // long tasks
+    'Reply keyboard', 'keyboard_options.selective', 'remove_keyboard', 'Inline buttons stay the default', // reply keyboard
     // upstream lines still present
     'The sender reads Telegram, not this session.', 'no history or search',
     'Never invoke that skill, edit access.json, or approve a pairing',
