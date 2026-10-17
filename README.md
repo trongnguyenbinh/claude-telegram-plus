@@ -111,12 +111,24 @@ Create `<STATE_DIR>/welcome.json` (same directory as `access.json`, default `~/.
 `scripts/install.sh` runs the checks and `install-overlay.sh` for you. See [RESTORE.md](./RESTORE.md) for restore after a plugin update and rollback.
 By hand: `scripts/install-overlay.sh` (dry run), then `--apply`.
 
+## Channel watchdog (herdr)
+
+Sometimes the channel process dies while the claude session lives on: `bot.pid` is gone or dead and `/mcp` shows `✘ plugin:telegram:telegram`. `scripts/tg-watchdog.py` (python3 stdlib) watches sessions running in [herdr](https://herdr.dev) panes and does the manual fix for you: waits until the agent is idle, leaves a typed draft alone, opens `/mcp`, walks to the telegram row by reading the screen, picks Reconnect, checks the new `bot.pid`, and reports via the Bot API (at most one attempt per agent per 10 min).
+
+```bash
+python3 scripts/tg-watchdog.py --config watchdog.json --once --dry-run   # detect + log only
+python3 scripts/tg-watchdog.py --config watchdog.json                    # loop, every 60 s
+```
+
+The config format is in the script's docstring. A process that is alive but stuck (e.g. gave up after repeated 409 Conflict) still has a live `bot.pid` and is not detected.
+
 ## Tests and audit (offline, no real token)
 
 ```bash
 bun install
 bun test                          # mock Bot API + real server.ts over MCP stdio, install.sh in a sandbox
 python3 hooks/test_telegram_progress.py   # progress hook, mock Bot API
+python3 scripts/test_tg_watchdog.py       # watchdog screen parsing
 scripts/test-upstream-compat.sh   # default behaviour == upstream
 gitleaks git --redact . && trufflehog git file://. --no-update --fail
 ```
