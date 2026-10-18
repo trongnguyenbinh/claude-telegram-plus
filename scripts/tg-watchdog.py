@@ -14,7 +14,7 @@ new bot.pid is alive and reports to Telegram via the Bot API.
 Config (JSON):
   {
     "notify": {"env_file": "/abs/state/.env", "chat_id": "123"},   # optional
-    "interval_s": 60, "cooldown_s": 600, "confirm_s": 20, "idle_wait_s": 600,
+    "interval_s": 60, "cooldown_s": 600, "confirm_s": 20, "idle_wait_s": 600, "heartbeat_stale_s": 180,
     "state_file": "~/.cache/tg-watchdog.json",
     "agents": [
       {"label": "main", "cwd": "/abs/project", "state_dir": "/abs/project/.claude/telegram"},
@@ -152,6 +152,43 @@ def bot_pid(state_dir, proc='server.ts'):
     return pid if proc in r.stdout else None
 
 
+def read_heartbeat(state_dir):
+    """(age_s, {pid, state, at}) from bot.heartbeat, or None when the server
+    is too old to write one."""
+    path = os.path.join(state_dir, 'bot.heartbeat')
+    try:
+        age = time.time() - os.stat(path).st_mtime
+        with open(path) as f:
+            hb = json.loads(f.read() or '{}')
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        hb = {}
+    return age, hb if isinstance(hb, dict) else {}
+
+
+def health(state_dir, proc='server.ts', stale_s=180):
+    """('ok' | 'dead' | 'deaf' | 'conflict', pid).
+    dead: bot.pid missing or not a live server. deaf: alive, but no getUpdates
+    completed for stale_s (server.ts refreshes bot.heartbeat after each one).
+    conflict: the server reports 409, another poller holds the token; a
+    reconnect would not help. No heartbeat file: judged by bot.pid alone."""
+    pid = bot_pid(state_dir, proc)
+    if not pid:
+        return 'dead', None
+    beat = read_heartbeat(state_dir)
+    if beat is None:
+        return 'ok', pid
+    age, hb = beat
+    if hb.get('pid') != pid:
+        # this server has not completed its first getUpdates yet: give it
+        # stale_s from when it took bot.pid
+        age = time.time() - os.stat(os.path.join(state_dir, 'bot.pid')).st_mtime
+    elif hb.get('state') == 'conflict':
+        return 'conflict', pid
+    return ('deaf' if age > stale_s else 'ok'), pid
+
+
 # ---- notify
 def notify(cfg, text, dry):
     n = cfg.get('notify')
@@ -248,21 +285,42 @@ def leave_menus(pane):
 def check(spec, cfg, st, dry):
     label = spec.get('label') or spec.get('herdr') or spec.get('cwd')
     state_dir = os.path.expanduser(spec['state_dir'])
-    alive = lambda: bot_pid(state_dir, spec.get('proc_match', 'server.ts'))
+    stale_s = cfg['heartbeat_stale_s']
+    state = lambda: health(state_dir, spec.get('proc_match', 'server.ts'), stale_s)
     agents = json.loads(herdr('agent', 'list'))['result']['agents']
     agent, why = find_agent(spec, agents)
     if not agent:
         log(f'{label}: {why}, skip')
         return
-    if (pid := alive()):
+    kind, pid = state()
+    if kind == 'ok':
         if dry:
             log(f'{label}: ok, {agent["pane_id"]} bot.pid={pid}')
         return
-    log(f'{label}: bot.pid missing or dead, confirming in {cfg["confirm_s"]}s')
+    if kind == 'conflict':
+        log(f'{label}: 409 conflict, another poller holds the token; not reconnecting')
+        key = f'{label}:conflict'
+        if time.time() - st.get(key, 0) >= cfg['cooldown_s']:
+            st[key] = time.time()
+            save_state(cfg, st)
+            notify(cfg, f'⚠️ tg-watchdog: {label} bị 409 Conflict: có poller khác giữ token bot (máy hoặc session khác). '
+                        f'Reconnect không giúp được; tìm tiến trình bun server.ts thừa.', dry)
+        return
+    what = 'bot.pid missing or dead' if kind == 'dead' else f'deaf: bot.pid={pid} alive but no getUpdates for >{stale_s}s'
+    log(f'{label}: {what}, confirming in {cfg["confirm_s"]}s')
     time.sleep(cfg['confirm_s'])
-    if alive():
+    if state()[0] == 'ok':
         log(f'{label}: came back by itself')
         return
+    old = pid
+
+    def recovered():
+        """New pid, healthy, and (if this server writes one) its own heartbeat:
+        it has really completed a getUpdates."""
+        k, p = state()
+        beat = read_heartbeat(state_dir)
+        return p if k == 'ok' and p != old and (beat is None or beat[1].get('pid') == p) else None
+
     last = st.get(label, 0)
     if time.time() - last < cfg['cooldown_s']:
         log(f'{label}: in cooldown ({int(time.time() - last)}s since last attempt), skip')
@@ -282,7 +340,7 @@ def check(spec, cfg, st, dry):
         except Exception:
             log(f'{label}: still busy, retry next round')
             return
-        if alive():
+        if state()[0] == 'ok':
             return
         status = json.loads(herdr('agent', 'get', pane))['result']['agent'].get('agent_status')
     if status not in ('idle', 'done'):
@@ -299,7 +357,7 @@ def check(spec, cfg, st, dry):
     try:
         reconnect(pane, spec.get('mcp_name', MCP_NAME))
         end = time.time() + 45
-        while time.time() < end and not (pid := alive()):
+        while time.time() < end and not (pid := recovered()):
             time.sleep(1)
         result = next((l.strip(' ⎿') for l in screen(pane).split('\n')[::-1]
                        if re.search(r'Reconnected to|[Ff]ailed to reconnect', l)), '')
@@ -309,12 +367,13 @@ def check(spec, cfg, st, dry):
         result = f'error: {type(e).__name__}: {str(e)[:150]}'
     finally:
         leave_menus(pane)
+    sick = 'chết' if kind == 'dead' else 'điếc (sống mà không nhận tin)'
     if pid:
         log(f'{label}: reconnected, bot.pid={pid}')
-        notify(cfg, f'🔌 tg-watchdog: {label} kênh Telegram chết, đã reconnect, bot.pid={pid} sống.', dry)
+        notify(cfg, f'🔌 tg-watchdog: {label} kênh Telegram {sick}, đã reconnect, bot.pid={pid} sống.', dry)
     else:
         log(f'{label}: reconnect FAILED: {result}')
-        notify(cfg, f'⚠️ tg-watchdog: {label} kênh Telegram chết, reconnect KHÔNG thành công ({result}). '
+        notify(cfg, f'⚠️ tg-watchdog: {label} kênh Telegram {sick}, reconnect KHÔNG thành công ({result}). '
                     f'Vào pane {pane}: /mcp → {spec.get("mcp_name", MCP_NAME)} → Reconnect.', dry)
 
 
@@ -336,7 +395,7 @@ def main():
     ap.add_argument('--once', action='store_true', help='one round, then exit')
     ap.add_argument('--dry-run', action='store_true', help='detect and log only: no keys, no message')
     a = ap.parse_args()
-    cfg = {'interval_s': 60, 'cooldown_s': 600, 'confirm_s': 20, 'idle_wait_s': 600,
+    cfg = {'interval_s': 60, 'cooldown_s': 600, 'confirm_s': 20, 'idle_wait_s': 600, 'heartbeat_stale_s': 180,
            'state_file': '~/.cache/tg-watchdog.json', **json.load(open(a.config))}
     cfg['state_file'] = os.path.expanduser(cfg['state_file'])
     while True:

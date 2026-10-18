@@ -78,4 +78,28 @@ try:
     raise SystemExit('expected FileNotFoundError')
 except FileNotFoundError:
     pass
+# heartbeat: dead / ok / deaf / conflict
+import json, time
+me = os.getpid()
+proc = 'test_tg_watchdog'
+d = tempfile.mkdtemp()
+assert wd.health(d, proc) == ('dead', None)
+open(os.path.join(d, 'bot.pid'), 'w').write(str(me))
+assert wd.health(d, proc) == ('ok', me)                       # no heartbeat file: older server
+hb = os.path.join(d, 'bot.heartbeat')
+open(hb, 'w').write(json.dumps({'pid': me, 'state': 'polling'}))
+assert wd.health(d, proc, stale_s=180) == ('ok', me)
+old = time.time() - 600
+os.utime(hb, (old, old))
+assert wd.health(d, proc, stale_s=180) == ('deaf', me)        # alive, no getUpdates for 10 min
+open(hb, 'w').write(json.dumps({'pid': me, 'state': 'conflict'}))
+os.utime(hb, (old, old))
+assert wd.health(d, proc, stale_s=180) == ('conflict', me)    # 409: reconnect would not help
+open(hb, 'w').write(json.dumps({'pid': 1, 'state': 'polling'}))  # heartbeat of a previous server
+assert wd.health(d, proc, stale_s=180) == ('ok', me)          # new bot.pid: still in its grace period
+os.utime(os.path.join(d, 'bot.pid'), (old, old))
+assert wd.health(d, proc, stale_s=180) == ('deaf', me)        # ...which ran out
+open(hb, 'w').write('not json')
+os.utime(os.path.join(d, 'bot.pid'), None)
+assert wd.health(d, proc, stale_s=180)[0] == 'ok'
 print('tg-watchdog parsing: OK')

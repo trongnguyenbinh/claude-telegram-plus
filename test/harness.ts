@@ -16,14 +16,23 @@ export type Call = { method: string; body: Record<string, any>; at: number }
 // Per-test knob for draft methods: return {fail:true} to answer HTTP 400,
 // {delayMs} to answer late.
 export type DraftBehaviour = (body: Record<string, any>) => { fail?: boolean; delayMs?: number } | undefined
+// Per-test knob for any other method: return {code, description} to answer with that error.
+export type ApiBehaviour = (method: string, body: Record<string, any>) => { code: number; description: string } | undefined
 
-export async function startHarness(extraEnv: Record<string, string> = {}) {
+// setup runs on the state dir before server.ts starts; ready:'connected' skips
+// waiting for setMyCommands (a send-only server never polls).
+export async function startHarness(
+  extraEnv: Record<string, string> = {},
+  opts: { setup?: (stateDir: string) => void; ready?: 'commands' | 'connected' } = {},
+) {
   const calls: Call[] = []
   const updates: any[] = []
   const notes: any[] = []
   let nextId = 100
   let updateId = 1
-  const knobs: { draft?: DraftBehaviour } = {}
+  // updates: 'hang' keeps getUpdates open, 'conflict' answers 409.
+  const knobs: { draft?: DraftBehaviour; api?: ApiBehaviour; updates?: () => 'hang' | 'conflict' | undefined } = {}
+  let polls = 0
 
   const reply = (result: unknown) => Response.json({ ok: true, result })
 
@@ -42,10 +51,17 @@ export async function startHarness(extraEnv: Record<string, string> = {}) {
         }
       }
       if (method === 'getUpdates') {
+        polls++
+        while (knobs.updates?.() === 'hang') await Bun.sleep(25)
+        if (knobs.updates?.() === 'conflict') {
+          return Response.json({ ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running' }, { status: 409 })
+        }
         for (let i = 0; i < 20 && updates.length === 0; i++) await Bun.sleep(25)
         return reply(updates.splice(0))
       }
       calls.push({ method, body, at: Date.now() })
+      const fail = knobs.api?.(method, body)
+      if (fail) return Response.json({ ok: false, error_code: fail.code, description: fail.description }, { status: fail.code })
       switch (method) {
         case 'getMe':
           return reply({ id: 999, is_bot: true, first_name: 'Test', username: 'test_plus_bot' })
@@ -81,6 +97,7 @@ export async function startHarness(extraEnv: Record<string, string> = {}) {
     groups: { [String(GROUP)]: { requireMention: true, allowFrom: [] } },
     pending: {},
   }))
+  opts.setup?.(stateDir)
 
   const client = new Client({ name: 'offline-test', version: '0' })
   client.fallbackNotificationHandler = async n => { notes.push(n) }
@@ -109,10 +126,10 @@ export async function startHarness(extraEnv: Record<string, string> = {}) {
     stderr: 'ignore',
   }))
   // Startup is done once polling began and commands were registered.
-  await waitFor(() => calls.some(c => c.method === 'setMyCommands'))
+  if (opts.ready !== 'connected') await waitFor(() => calls.some(c => c.method === 'setMyCommands'))
 
   return {
-    calls, notes, knobs, client, waitFor, stateDir,
+    calls, notes, knobs, client, waitFor, stateDir, polls: () => polls,
     async call(name: string, args: Record<string, unknown>) {
       const before = calls.length
       const t0 = Date.now()

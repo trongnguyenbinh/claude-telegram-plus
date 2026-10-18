@@ -19,7 +19,7 @@ import { z } from 'zod'
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { execFileSync } from 'child_process'
 import { join, extname, sep } from 'path'
@@ -55,11 +55,59 @@ if (!TOKEN) {
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const PID_FILE = join(STATE_DIR, 'bot.pid')
 
-// Telegram allows exactly one getUpdates consumer per token. If a previous
-// session crashed (SIGKILL, terminal closed) its server.ts grandchild can
-// survive as an orphan and hold the slot forever, so every new session sees
-// 409 Conflict. Kill any stale holder before we start polling.
+// telegram-plus: plus build, logged at start so a running server can be matched to a release.
+const PLUS_VERSION = '0.0.7-plus.5'
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+
+// telegram-plus: lifecycle log in STATE_DIR/server.log (start, mode, polling,
+// 409, stalls, why we shut down). Never message content; anything shaped like
+// a bot token is masked. Rotated to server.log.1 past 1MB.
+const LOG_FILE = join(STATE_DIR, 'server.log')
+const LOG_MAX_BYTES = 1024 * 1024
+function slog(line: string): void {
+  const safe = line.replace(/\d{6,}:[\w-]{30,}/g, '<token>')
+  process.stderr.write(`telegram channel: ${safe}\n`)
+  try {
+    try { if (statSync(LOG_FILE).size > LOG_MAX_BYTES) renameSync(LOG_FILE, LOG_FILE + '.1') } catch {}
+    appendFileSync(LOG_FILE, `${new Date().toISOString()} pid=${process.pid} ${safe}\n`, { mode: 0o600 })
+  } catch {}
+}
+
+// telegram-plus: process ancestry, to tell an orphaned poller from one that
+// still belongs to a live Claude Code session.
+function procInfo(pid: number): { ppid: number; args: string } | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    const m = /^(\d+)\s+(.*)$/s.exec(out)
+    return m ? { ppid: Number(m[1]), args: m[2] } : null
+  } catch {
+    return null
+  }
+}
+// The MCP client that launched a server.ts: its first ancestor that is not a
+// bun wrapper (`bun run ... start`). null when the chain can't be read.
+function clientOf(pid: number): { pid: number; args: string } | null {
+  let cur = procInfo(pid)?.ppid
+  for (let i = 0; cur != null && cur > 0 && i < 6; i++) {
+    const p = procInfo(cur)
+    if (!p) return null
+    if (!/\bbun\b/.test(p.args) || !/\brun\b|server\.ts/.test(p.args)) return { pid: cur, args: p.args }
+    cur = p.ppid
+  }
+  return null
+}
+const isInit = (c: { pid: number; args: string } | null) =>
+  !c || c.pid <= 1 || /^(\S*\/)?(launchd|init|systemd)(\s|$)/.test(c.args)
+const exeName = (args: string) => (args.split(/\s+/)[0] ?? '').split('/').pop() ?? ''
+
+// Telegram allows exactly one getUpdates consumer per token. A holder in
+// bot.pid is replaced only when it is orphaned (its Claude Code is gone) or is
+// our own predecessor (same client, e.g. /mcp Reconnect). A holder that still
+// belongs to another live session keeps the bot: we run send-only. Before,
+// any `claude -p` started from inside a channel session (it inherits
+// TELEGRAM_STATE_DIR) killed that session's poller and then removed bot.pid.
+let ownsPolling = true
+const ourClient = clientOf(process.pid)
 try {
   const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
   if (stale > 1 && stale !== process.pid) {
@@ -68,22 +116,28 @@ try {
     // server.ts process before SIGTERM. Otherwise a recycled PID can point at
     // our own bun-run wrapper (kills our stdin → immediate self-shutdown) or
     // an unrelated user process.
-    const cmd = execFileSync('ps', ['-p', String(stale), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-    if (cmd.includes('server.ts')) {
-      process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
-      process.kill(stale, 'SIGTERM')
+    if (procInfo(stale)?.args.includes('server.ts')) {
+      const theirs = clientOf(stale)
+      if (isInit(theirs) || theirs!.pid === ourClient?.pid) {
+        slog(`replacing ${isInit(theirs) ? 'orphaned' : 'previous'} poller pid=${stale}`)
+        process.kill(stale, 'SIGTERM')
+      } else {
+        ownsPolling = false
+        slog(`bot already polled by pid=${stale} (client pid=${theirs!.pid} ${exeName(theirs!.args)}); this server runs send-only`)
+      }
     }
   }
 } catch {}
-writeFileSync(PID_FILE, String(process.pid))
+if (ownsPolling) writeFileSync(PID_FILE, String(process.pid))
+slog(`start v${PLUS_VERSION} ppid=${process.ppid} client=${ourClient ? `${ourClient.pid} ${exeName(ourClient.args)}` : '?'} mode=${ownsPolling ? 'poll' : 'send-only'}`)
 
 // Last-resort safety net — without these the process dies silently on any
 // unhandled promise rejection. With them it logs and keeps serving tools.
 process.on('unhandledRejection', err => {
-  process.stderr.write(`telegram channel: unhandled rejection: ${err}\n`)
+  slog(`unhandled rejection: ${err}`)
 })
 process.on('uncaughtException', err => {
-  process.stderr.write(`telegram channel: uncaught exception: ${err}\n`)
+  slog(`uncaught exception: ${err}`)
 })
 
 // Permission-reply spec from anthropics/claude-cli-internal
@@ -407,8 +461,37 @@ const BUTTON_STYLES = new Set(['primary', 'success', 'danger'])
 
 const BUTTONS_SCHEMA = {
   type: 'array',
-  description: "Inline keyboard: array of rows, each row an array of buttons {text, callback_data?, url?, copy_text?, style?: 'primary'|'success'|'danger'}. A button without url/copy_text is a callback button; its press arrives as a <channel> message '(button) <callback_data or text>'. callback_data max 62 bytes. Attached to the last text part.",
+  description: "Inline keyboard: array of rows, each row an array of buttons {text, callback_data?, url?, copy_text?, style?: 'primary'|'success'|'danger'}. A button without url/copy_text is a callback button; its press arrives as a <channel> message '(button) <callback_data or text>'. callback_data max 62 bytes. Attached to the last text part. After a press the keyboard collapses to the chosen button (✅) unless keep_buttons is true.",
   items: { type: 'array', items: { type: 'object' } },
+}
+const KEEP_BUTTONS_SCHEMA = {
+  type: 'boolean',
+  description: 'Keep the inline keyboard after a press (a menu or pager meant to be pressed again). Default false: the keyboard collapses to the chosen button so it cannot be pressed twice.',
+}
+
+// telegram-plus: button-press feedback. After a press the keyboard collapses
+// to one "✅ <label>" button carrying USED_CB, so the choice stays visible and
+// can't be sent twice. keep_buttons messages are left alone.
+const USED_CB = 'u!'
+const PRESS_DEDUPE_MS = 10 * 60 * 1000
+const keepButtonMsgs = new Set<string>()
+const pressedAt = new Map<string, number>()
+function setKeepButtons(chatId: string, messageId: number, keep: boolean): void {
+  const key = `${chatId}:${messageId}`
+  if (!keep) { keepButtonMsgs.delete(key); return }
+  keepButtonMsgs.add(key)
+  if (keepButtonMsgs.size > 2000) keepButtonMsgs.delete(keepButtonMsgs.values().next().value!)
+}
+// Toasts follow the presser's Telegram app language (from.language_code).
+const BUTTON_TOASTS = {
+  en: { used: 'Already chosen', again: 'Already received', undelivered: '⚠️ Not delivered to Claude, try again later' },
+  vi: { used: 'Đã chọn rồi', again: 'Đã nhận rồi', undelivered: '⚠️ Chưa giao được cho Claude, thử lại sau' },
+}
+const toastsFor = (from?: { language_code?: string }) => BUTTON_TOASTS[from?.language_code?.startsWith('vi') ? 'vi' : 'en']
+function buttonLabel(markup: unknown, data: string): string | undefined {
+  const rows = (markup as { inline_keyboard?: { text?: string; callback_data?: string }[][] } | undefined)?.inline_keyboard ?? []
+  for (const row of rows) for (const b of row) if (b.callback_data === data && b.text) return b.text
+  return undefined
 }
 
 type ButtonSpec = { text?: string; callback_data?: string; url?: string; copy_text?: string; style?: string }
@@ -625,7 +708,7 @@ const mcp = new Server(
       // telegram-plus: reply guideline, so every agent on this plugin formats the same way.
       'Reply guideline (telegram-plus):',
       "- Structured messages (3+ points, a table, progress, a task list): reply with format:'rich' (Telegram Rich Messages: plain Markdown, no escaping). Start with a heading, put the conclusion in **bold**, commands and paths in `code`, numbers in a table, pending items as '- [ ]', and long commands in a ``` block inside the same rich message.",
-      "- Choices for the user: add callback buttons (buttons: rows of {text, callback_data}; callback_data max 62 bytes). A press arrives as a <channel> message '(button) <data>' with callback_query_id. Treat it as that user's answer; it passed the same access gate as a typed message.",
+      "- Choices for the user: add callback buttons (buttons: rows of {text, callback_data}; callback_data max 62 bytes). A press arrives as a <channel> message '(button) <data>' with callback_query_id. Treat it as that user's answer; it passed the same access gate as a typed message. The presser already got a '✓ <label>' toast and the keyboard collapsed to the chosen button, so no 'got it' reply is needed; pass keep_buttons:true for a menu meant to be pressed again.",
       '- A command the user must paste and run themselves: add a copy_text button (max 256 chars). For a longer command, write a script and offer the short command that runs it.',
       "- Plain text (no format) for 1-2 line messages, for replies with files or photos, and for text the user will copy and post elsewhere (rich renders '- ' as bullets, which breaks the copy).",
       "- Reply keyboard (keyboard, replaces the user's letter keyboard): only for a fixed menu the user reuses over several turns, mainly in a private chat. In a group pass keyboard_options.selective with reply_to so only that user sees it. Send remove_keyboard when the flow is done. Inline buttons stay the default for choices inside one message; never both in one message.",
@@ -697,6 +780,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' sends a Telegram Rich Message: plain Markdown (# headings, lists, - [ ] task lists, | tables |, ``` code, > quotes, <details>), no escaping, up to 32768 chars. Default: 'text' (plain, no escaping needed).",
           },
           buttons: BUTTONS_SCHEMA,
+          keep_buttons: KEEP_BUTTONS_SCHEMA,
           keyboard: KEYBOARD_SCHEMA,
           keyboard_options: {
             type: 'object',
@@ -789,6 +873,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. 'rich' = Telegram Rich Message Markdown (see reply). Default: 'text' (plain, no escaping needed).",
           },
           buttons: BUTTONS_SCHEMA,
+          keep_buttons: KEEP_BUTTONS_SCHEMA,
           ephemeral_for: {
             type: 'string',
             description: 'Edit an ephemeral message: the user_id who received it; message_id is then its ephemeral_message_id.',
@@ -910,6 +995,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             `reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`,
           )
         }
+        if (args.buttons != null) setKeepButtons(chat_id, sentIds[chunks.length - 1], args.keep_buttons === true)
 
         // Files go as separate messages (Telegram doesn't mix text+file in one
         // sendMessage call). Thread under reply_to if present.
@@ -985,6 +1071,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             return { content: [{ type: 'text', text: `edited ephemeral (id: ${args.message_id})` }] }
           }
           const edited = await bot.api.raw.editMessageText({ ...body, message_id: Number(args.message_id) } as never) as unknown
+          if (args.buttons != null) setKeepButtons(String(args.chat_id), Number(args.message_id), args.keep_buttons === true)
           const id = typeof edited === 'object' && edited ? (edited as { message_id: number }).message_id : args.message_id
           return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
         }
@@ -1057,10 +1144,10 @@ await mcp.connect(new StdioServerTransport())
 // the bot keeps polling forever as a zombie, holding the token and blocking
 // the next session with 409 Conflict.
 let shuttingDown = false
-function shutdown(): void {
+function shutdown(reason: string): void {
   if (shuttingDown) return
   shuttingDown = true
-  process.stderr.write('telegram channel: shutting down\n')
+  slog(`shutting down: ${reason} (ppid=${process.ppid})`)
   try {
     if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
   } catch {}
@@ -1069,11 +1156,11 @@ function shutdown(): void {
   setTimeout(() => process.exit(0), 2000)
   void Promise.resolve(bot.stop()).finally(() => process.exit(0))
 }
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
-process.on('SIGHUP', shutdown)
+process.stdin.on('end', () => shutdown('stdin end (MCP client closed the connection)'))
+process.stdin.on('close', () => shutdown('stdin closed'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGHUP', () => shutdown('SIGHUP'))
 
 // Orphan watchdog: belt-and-suspenders for the stdin 'end'/'close' handlers
 // above. Stdin is the MCP transport pipe inherited straight from the CLI; the
@@ -1082,7 +1169,7 @@ process.on('SIGHUP', shutdown)
 // false-fires when the bun-run/shell wrapper exits or execs during normal
 // startup and we get reparented to init.
 setInterval(() => {
-  if (process.stdin.destroyed || process.stdin.readableEnded) shutdown()
+  if (process.stdin.destroyed || process.stdin.readableEnded) shutdown('orphan check: stdin gone')
 }, 5000).unref()
 
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
@@ -1139,6 +1226,11 @@ bot.command('status', async ctx => {
 // Security mirrors the text-reply path: allowFrom must contain the sender.
 bot.on('callback_query:data', async ctx => {
   const data = ctx.callbackQuery.data
+  // telegram-plus: the collapsed "✅ <label>" button left after a press.
+  if (data === USED_CB) {
+    await ctx.answerCallbackQuery({ text: toastsFor(ctx.from).used }).catch(() => {})
+    return
+  }
   // telegram-plus: presses on buttons Claude attached via reply/edit_message.
   if (data.startsWith(CB_PREFIX)) {
     await handleButtonPress(ctx, data.slice(CB_PREFIX.length))
@@ -1202,34 +1294,60 @@ bot.on('callback_query:data', async ctx => {
 // callback_data is client-supplied, so it is sanitised like a filename before
 // it lands in meta. callback_query_id lets Claude answer with an ephemeral
 // message (ephemeral_for + callback_query_id) within Telegram's 15s window.
+// Feedback: the toast is sent only after the press reached Claude; then the
+// keyboard collapses to the chosen button (unless keep_buttons) and a second
+// press on the same message within 10 min is not delivered again.
 async function handleButtonPress(ctx: Context, value: string): Promise<void> {
   const cq = ctx.callbackQuery!
-  const msg = cq.message as ({ message_id: number; ephemeral_message_id?: number; chat: { id: number; type: string } } | undefined)
+  const msg = cq.message as ({ message_id: number; ephemeral_message_id?: number; chat: { id: number; type: string }; reply_markup?: unknown } | undefined)
   const senderId = String(cq.from.id)
   if (!msg || !interactionAllowed(String(msg.chat.id), msg.chat.type, senderId)) {
     await ctx.answerCallbackQuery({ text: 'Not authorized.' }).catch(() => {})
     return
   }
-  await ctx.answerCallbackQuery().catch(() => {})
+  const toasts = toastsFor(cq.from)
+  const chatId = String(msg.chat.id)
+  const key = `${chatId}:${msg.message_id || `e${msg.ephemeral_message_id}`}`
+  const keep = keepButtonMsgs.has(key)
+  const now = Date.now()
+  for (const [k, t] of pressedAt) if (now - t > PRESS_DEDUPE_MS) pressedAt.delete(k)
+  if (!keep && pressedAt.has(key)) {
+    await ctx.answerCallbackQuery({ text: toasts.again }).catch(() => {})
+    return
+  }
+  if (!keep) pressedAt.set(key, now) // before the await: a fast double tap must not slip through
   const clean = (safeName(value) ?? '').replace(/"/g, '_') // also quotes: meta becomes tag attributes
-  mcp.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content: `(button) ${clean}`,
-      meta: {
-        chat_id: String(msg.chat.id),
-        ...(msg.message_id ? { message_id: String(msg.message_id) } : {}),
-        ...(msg.ephemeral_message_id != null ? { ephemeral_message_id: String(msg.ephemeral_message_id) } : {}),
-        user: cq.from.username ?? senderId,
-        user_id: senderId,
-        ts: new Date().toISOString(),
-        callback_data: clean,
-        callback_query_id: cq.id,
+  try {
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `(button) ${clean}`,
+        meta: {
+          chat_id: chatId,
+          ...(msg.message_id ? { message_id: String(msg.message_id) } : {}),
+          ...(msg.ephemeral_message_id != null ? { ephemeral_message_id: String(msg.ephemeral_message_id) } : {}),
+          user: cq.from.username ?? senderId,
+          user_id: senderId,
+          ts: new Date().toISOString(),
+          callback_data: clean,
+          callback_query_id: cq.id,
+        },
       },
-    },
-  }).catch(err => {
-    process.stderr.write(`telegram channel: failed to deliver button press to Claude: ${err}\n`)
-  })
+    })
+  } catch (err) {
+    pressedAt.delete(key)
+    slog(`failed to deliver a button press to Claude: ${err}`)
+    await ctx.answerCallbackQuery({ text: toasts.undelivered }).catch(() => {})
+    return
+  }
+  const label = buttonLabel(msg.reply_markup, cq.data ?? '') ?? value
+  await ctx.answerCallbackQuery({ text: `✓ ${label}`.slice(0, 200) }).catch(() => {})
+  if (!keep && msg.message_id) {
+    await ctx.editMessageReplyMarkup({
+      reply_markup: { inline_keyboard: [[{ text: `✅ ${label}`, callback_data: USED_CB }]] },
+    }).catch(() => {}) // not modified / too old / no rights: the toast already told them
+  }
+  void bot.api.sendChatAction(chatId, 'typing').catch(() => {})
 }
 
 // telegram-plus: the user pressed Stop on a stream_draft preview
@@ -1584,19 +1702,92 @@ bot.catch(err => {
   process.stderr.write(`telegram channel: handler error (polling continues): ${err.error}\n`)
 })
 
+// telegram-plus: liveness. Every completed getUpdates refreshes STATE_DIR/bot.heartbeat
+// ({pid, state, at}; state 'conflict' while another poller holds the token), so
+// an outside watchdog can tell a live-but-deaf channel from a working one. Each
+// getUpdates is capped at 60s (the long poll itself is 30s) without touching the
+// timeout of uploads, and an in-process watchdog restarts the poll loop when no
+// getUpdates completed for 120s. Thresholds are env-tunable for tests only.
+const envMs = (name: string, dflt: number) => Number(process.env[name]) > 0 ? Number(process.env[name]) : dflt
+const GET_UPDATES_TIMEOUT_MS = envMs('TELEGRAM_PLUS_GET_UPDATES_TIMEOUT_MS', 60_000)
+const STALL_MS = envMs('TELEGRAM_PLUS_STALL_MS', 120_000)
+const STALL_CHECK_MS = envMs('TELEGRAM_PLUS_STALL_CHECK_MS', 30_000)
+const CONFLICT_BACKOFF_MS = envMs('TELEGRAM_PLUS_CONFLICT_BACKOFF_MS', 1000)
+const CONFLICT_BACKOFF_MAX_MS = envMs('TELEGRAM_PLUS_CONFLICT_BACKOFF_MAX_MS', 600_000)
+const HEARTBEAT_FILE = join(STATE_DIR, 'bot.heartbeat')
+let pollState: 'polling' | 'conflict' = 'polling'
+let lastPollOk = Date.now()
+let lastBeatWrite = 0
+let conflicts = 0
+let pollLoopRunning = false
+let restartRequested = false
+let stopping: Promise<unknown> | undefined
+
+function beat(state: 'polling' | 'conflict'): void {
+  const changed = state !== pollState
+  pollState = state
+  const now = Date.now()
+  if (state === 'polling') { lastPollOk = now; conflicts = 0 }
+  if (!changed && now - lastBeatWrite < 1000) return
+  lastBeatWrite = now
+  try {
+    writeFileSync(HEARTBEAT_FILE, JSON.stringify({ pid: process.pid, state, at: new Date(now).toISOString() }) + '\n')
+  } catch {}
+}
+
+bot.api.config.use(async (prev, method, payload, signal) => {
+  if (method !== 'getUpdates') return prev(method, payload, signal)
+  const cap = AbortSignal.timeout(GET_UPDATES_TIMEOUT_MS)
+  const res = await prev(method, payload, (signal ? AbortSignal.any([signal, cap]) : cap) as never)
+  if (res.ok && !shuttingDown) beat('polling')
+  return res
+})
+
+function restartPollLoop(why: string): void {
+  slog(`stall: ${why}; restarting the poll loop`)
+  restartRequested = true
+  // stop() ends with a short getUpdates that confirms the offset; the next
+  // start() waits for it, or that call would clear the new loop's AbortController.
+  stopping = Promise.resolve(bot.stop()).catch(() => {})
+  // grammY handles updates one by one: a handler stuck forever keeps the old
+  // loop from ending. Then exit, so the channel shows as dead (bot.pid gone)
+  // and Claude Code / tg-watchdog reconnect it instead of it staying deaf.
+  setTimeout(() => {
+    if (pollLoopRunning && restartRequested && !shuttingDown) shutdown('poll loop did not stop within 15s (a handler is stuck)')
+  }, 15_000).unref()
+}
+
+let lastStallCheck = Date.now()
+setInterval(() => {
+  const now = Date.now()
+  const late = now - lastStallCheck > 2 * STALL_CHECK_MS
+  lastStallCheck = now
+  // A check that runs far too late means the host slept or the event loop
+  // froze: rebase instead of blaming the network.
+  if (late) { lastPollOk = now; return }
+  if (!ownsPolling || shuttingDown || !pollLoopRunning || restartRequested || pollState !== 'polling') return
+  if (now - lastPollOk > STALL_MS) restartPollLoop(`no completed getUpdates for ${Math.round((now - lastPollOk) / 1000)}s`)
+}, STALL_CHECK_MS).unref()
+
 // Retry polling with backoff on any error. Previously only 409 was retried —
 // a single ETIMEDOUT/ECONNRESET/DNS failure rejected bot.start(), the catch
 // returned, and polling stopped permanently while the process stayed alive
 // (MCP stdin keeps it running). Outbound tools kept working but the bot was
 // deaf to inbound messages until a full restart.
+// telegram-plus: 409 never gives up (it used to retry every 1s forever, since
+// onStart reset the attempt counter before each getUpdates): backoff doubles
+// up to 10 min and the heartbeat says 'conflict' meanwhile.
 void (async () => {
+  if (!ownsPolling) return // send-only: another live session polls this bot
   for (let attempt = 1; ; attempt++) {
     try {
+      lastPollOk = Date.now()
+      pollLoopRunning = true
       await bot.start({
         onStart: info => {
           attempt = 0
           botUsername = info.username
-          process.stderr.write(`telegram channel: polling as @${info.username}\n`)
+          slog(`polling as @${info.username}`)
           void bot.api.setMyCommands(
             [
               { command: 'start', description: 'Welcome and setup guide' },
@@ -1607,24 +1798,28 @@ void (async () => {
           ).catch(() => {})
         },
       })
+      pollLoopRunning = false
+      if (shuttingDown) return
+      if (restartRequested) { await stopping; restartRequested = false; slog('poll loop restarted'); continue }
       return // bot.stop() was called — clean exit from the loop
     } catch (err) {
+      pollLoopRunning = false
       if (shuttingDown) return
       // bot.stop() mid-setup rejects with grammy's "Aborted delay" — expected, not an error.
-      if (err instanceof Error && err.message === 'Aborted delay') return
-      const is409 = err instanceof GrammyError && err.error_code === 409
-      if (is409 && attempt >= 8) {
-        process.stderr.write(
-          `telegram channel: 409 Conflict persists after ${attempt} attempts — ` +
-          `another poller is holding the bot token (stray 'bun server.ts' process or a second session). Exiting.\n`,
-        )
+      if (err instanceof Error && err.message === 'Aborted delay') {
+        if (restartRequested) { await stopping; restartRequested = false; slog('poll loop restarted'); continue }
         return
       }
+      if (err instanceof GrammyError && err.error_code === 409) {
+        conflicts++
+        beat('conflict')
+        const delay = Math.min(CONFLICT_BACKOFF_MS * 2 ** (conflicts - 1), CONFLICT_BACKOFF_MAX_MS)
+        slog(`409 Conflict #${conflicts}: another poller holds this bot token (stray 'bun server.ts', another session or machine); retrying in ${Math.round(delay / 1000)}s`)
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
       const delay = Math.min(1000 * attempt, 15000)
-      const detail = is409
-        ? `409 Conflict${attempt === 1 ? ' — another instance is polling (zombie session, or a second Claude Code running?)' : ''}`
-        : `polling error: ${err}`
-      process.stderr.write(`telegram channel: ${detail}, retrying in ${delay / 1000}s\n`)
+      slog(`polling error: ${err}, retrying in ${delay / 1000}s`)
       await new Promise(r => setTimeout(r, delay))
     }
   }

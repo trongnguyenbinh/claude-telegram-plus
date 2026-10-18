@@ -48,7 +48,7 @@ arguments, every upstream tool sends the exact request it sent before:
 | Tool / option | Bot API | Where it works |
 |---|---|---|
 | `reply` / `edit_message` `format: "rich"`: Rich Messages (plain Markdown: headings, lists, task lists, tables, code, quotes, `<details>`, no escaping, 32768 chars) | `sendRichMessage`, `editMessageText.rich_message` (10.1) | all chats |
-| `reply` / `edit_message` `buttons`: inline keyboard with callback, url, copy-text buttons, `style` primary/success/danger. A press arrives in the session as `(button) <data>` with `callback_query_id` | `reply_markup`, `InlineKeyboardButton.style` (9.4), `copy_text` | all chats; presses accepted from the same people the inbound gate allows |
+| `reply` / `edit_message` `buttons`: inline keyboard with callback, url, copy-text buttons, `style` primary/success/danger. A press arrives in the session as `(button) <data>` with `callback_query_id`; the presser gets a `✓ <label>` toast and the keyboard collapses to `✅ <label>` (see [Button presses](#button-presses)) | `reply_markup`, `InlineKeyboardButton.style` (9.4), `copy_text`, `answerCallbackQuery`, `editMessageReplyMarkup` | all chats; presses accepted from the same people the inbound gate allows |
 | `reply` `keyboard` (+ `keyboard_options`), `remove_keyboard`, `force_reply`: reply keyboard under the input field, with text, contact, location, poll, users, chat and Web App buttons. A plain press arrives as a normal text message; request buttons arrive as `(contact) ...`, `(location) lat,lon`, `(poll) ...`, `(users_shared ...)`, `(chat_shared ...)`, `(web_app_data ...)` | `ReplyKeyboardMarkup`, `ReplyKeyboardRemove`, `ForceReply` | text buttons everywhere; request and Web App buttons in private chats only; one reply_markup per message, so never together with `buttons` |
 | `reply` `ephemeral_for` (+ `callback_query_id`, `replace_callback_message`, `reply_to_ephemeral`): a message only one group member sees | `ephemeral_message_parameters` (10.2/10.3) | groups/supergroups; within 15s of the user's action, or any time if the bot is admin; delivery not guaranteed |
 | `edit_message` / `delete_message` with `ephemeral_for` | `editEphemeralMessageText`, `deleteEphemeralMessage` | groups |
@@ -106,6 +106,25 @@ Create `<STATE_DIR>/welcome.json` (same directory as `access.json`, default `~/.
   (core.telegram.org/bots/features#privacy-mode). The `chat_member` update is not used:
   it needs admin rights and an explicit `allowed_updates`.
 
+## Button presses
+
+What the presser sees, so they know the bot got it:
+
+1. The press is handed to Claude first. Only then the toast `✓ <button label>` shows. If it could not reach Claude: `⚠️ Not delivered to Claude, try again later` and the keyboard stays.
+2. The keyboard collapses to one button `✅ <label>`, so the choice stays visible in the chat and can't be sent twice. Pressing it again shows `Already chosen`. The message text is not touched, so rich and MarkdownV2 messages keep their formatting.
+3. A second press on the same message within 10 minutes (a fast double tap, before the collapse lands) is not delivered again: `Already received`.
+4. A typing indicator starts right away.
+
+Pass `keep_buttons: true` on `reply` / `edit_message` for a menu or pager meant to be pressed again: toast only, no collapse, every press delivered. Toasts are English, or Vietnamese when the presser's Telegram app language is `vi`. Permission-relay buttons (`perm:`) keep the upstream behaviour.
+
+## Liveness: server.log, heartbeat, one poller per bot
+
+- `STATE_DIR/server.log`: start (version, ppid, MCP client, mode), `polling as @bot`, 409s, stalls, and why the server shut down (`stdin end`, `SIGTERM`, ...). No message content; token-shaped strings are masked. Rotated to `server.log.1` past 1MB.
+- `STATE_DIR/bot.heartbeat`: `{pid, state, at}`, rewritten after every completed `getUpdates` (at most once per second). `state` is `conflict` while a 409 lasts.
+- In-process stall watchdog: if no `getUpdates` completed for 120 s (checked every 30 s, each `getUpdates` capped at 60 s), the poll loop is restarted. A check that runs far too late (host asleep) only rebases the clock. If the old loop can't stop within 15 s (a handler stuck), the server exits so it shows up as dead and gets reconnected.
+- 409 Conflict never gives up: retries back off 1 s, 2 s, 4 s ... up to 10 min, each one logged.
+- `bot.pid` holder: a new server replaces it only if it is orphaned (its Claude Code is gone) or is its own predecessor (same client, e.g. `/mcp` Reconnect). If the holder belongs to another live session, e.g. a `claude -p` run from a Bash tool inside a channel session that inherited `TELEGRAM_STATE_DIR`, the new server runs **send-only**: tools work, no polling, and it leaves `bot.pid` alone. Before, such a child killed the session's poller and then deleted `bot.pid` on exit.
+
 ## Install, restore, update
 
 `scripts/install.sh` runs the checks and `install-overlay.sh` for you. See [RESTORE.md](./RESTORE.md) for restore after a plugin update and rollback.
@@ -115,12 +134,14 @@ By hand: `scripts/install-overlay.sh` (dry run), then `--apply`.
 
 Sometimes the channel process dies while the claude session lives on: `bot.pid` is gone or dead and `/mcp` shows `✘ plugin:telegram:telegram`. `scripts/tg-watchdog.py` (python3 stdlib) watches sessions running in [herdr](https://herdr.dev) panes and does the manual fix for you: waits until the agent is idle, leaves a typed draft alone, opens `/mcp`, walks to the telegram row by reading the screen, picks Reconnect, checks the new `bot.pid`, and reports via the Bot API (at most one attempt per agent per 10 min).
 
+It also catches a channel that is alive but deaf: `bot.pid` is alive but `bot.heartbeat` is older than 3 min (`heartbeat_stale_s`), so no `getUpdates` completed. That is reconnected the same way, and success means a new pid whose own heartbeat came in. A heartbeat saying `conflict` (409, another poller has the token) is reported, not reconnected.
+
 ```bash
 python3 scripts/tg-watchdog.py --config watchdog.json --once --dry-run   # detect + log only
 python3 scripts/tg-watchdog.py --config watchdog.json                    # loop, every 60 s
 ```
 
-The config format is in the script's docstring. A process that is alive but stuck (e.g. gave up after repeated 409 Conflict) still has a live `bot.pid` and is not detected.
+The config format is in the script's docstring. Servers older than v0.0.7-plus.5 write no heartbeat; for them only a dead `bot.pid` is detected.
 
 ## Tests and audit (offline, no real token)
 
@@ -128,7 +149,7 @@ The config format is in the script's docstring. A process that is alive but stuc
 bun install
 bun test                          # mock Bot API + real server.ts over MCP stdio, install.sh in a sandbox
 python3 hooks/test_telegram_progress.py   # progress hook, mock Bot API
-python3 scripts/test_tg_watchdog.py       # watchdog screen parsing
+python3 scripts/test_tg_watchdog.py       # watchdog screen parsing + heartbeat health
 scripts/test-upstream-compat.sh   # default behaviour == upstream
 gitleaks git --redact . && trufflehog git file://. --no-update --fail
 ```
