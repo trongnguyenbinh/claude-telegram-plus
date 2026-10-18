@@ -103,4 +103,13 @@ open(hb, 'w').write('not json')
 os.utime(os.path.join(d, 'bot.pid'), None)
 assert wd.health(d, proc, stale_s=180)[0] == 'ok'
 assert wd.RECONNECT_WAIT_S >= 90  # first heartbeat after Reconnect took 35-38s in the field
+# per-agent notify overrides the top-level one (dry run only logs, sends nothing)
+import contextlib, io
+buf = io.StringIO()
+with contextlib.redirect_stderr(buf):
+    wd.notify({'notify': {'env_file': '/main/.env', 'chat_id': '1'}}, 'x', True, {'notify': {'env_file': '/lead/.env', 'chat_id': '1'}})
+    wd.notify({'notify': {'env_file': '/main/.env', 'chat_id': '1'}}, 'y', True, {'label': 'no own notify'})
+    wd.notify({}, 'z', True)
+out = buf.getvalue()
+assert 'via /lead/.env: x' in out and 'via /main/.env: y' in out and ': z' not in out, out
 print('tg-watchdog parsing: OK')

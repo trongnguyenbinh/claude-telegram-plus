@@ -19,12 +19,14 @@ Config (JSON):
     "agents": [
       {"label": "main", "cwd": "/abs/project", "state_dir": "/abs/project/.claude/telegram"},
       {"label": "lead", "herdr": "lead", "state_dir": "/abs/lead/.claude/channels/telegram",
-       "mcp_name": "plugin:telegram:telegram", "proc_match": "server.ts"}
+       "mcp_name": "plugin:telegram:telegram", "proc_match": "server.ts",
+       "notify": {"env_file": "/abs/lead/.claude/channels/telegram/.env", "chat_id": "123"}}
     ]
   }
 An agent is found by herdr name ("herdr") or, if unnamed, by the claude pane
 whose cwd equals "cwd". The token is read from notify.env_file
-(TELEGRAM_BOT_TOKEN=...) and never logged.
+(TELEGRAM_BOT_TOKEN=...) and never logged. An agent's own "notify" overrides
+the top-level one, e.g. to report through that agent's bot.
 """
 import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 
@@ -191,12 +193,12 @@ def health(state_dir, proc='server.ts', stale_s=180):
 
 
 # ---- notify
-def notify(cfg, text, dry):
-    n = cfg.get('notify')
+def notify(cfg, text, dry, spec=None):
+    n = (spec or {}).get('notify') or cfg.get('notify')
     if not n:
         return
     if dry:
-        log(f'dry-run: would notify: {text}')
+        log(f'dry-run: would notify via {n.get("env_file")}: {text}')
         return
     token = None
     try:
@@ -305,7 +307,7 @@ def check(spec, cfg, st, dry):
             st[key] = time.time()
             save_state(cfg, st)
             notify(cfg, f'⚠️ tg-watchdog: {label} bị 409 Conflict: có poller khác giữ token bot (máy hoặc session khác). '
-                        f'Reconnect không giúp được; tìm tiến trình bun server.ts thừa.', dry)
+                        f'Reconnect không giúp được; tìm tiến trình bun server.ts thừa.', dry, spec)
         return
     what = 'bot.pid missing or dead' if kind == 'dead' else f'deaf: bot.pid={pid} alive but no getUpdates for >{stale_s}s'
     log(f'{label}: {what}, confirming in {cfg["confirm_s"]}s')
@@ -373,11 +375,11 @@ def check(spec, cfg, st, dry):
     sick = 'chết' if kind == 'dead' else 'điếc (sống mà không nhận tin)'
     if pid:
         log(f'{label}: reconnected, bot.pid={pid}')
-        notify(cfg, f'🔌 tg-watchdog: {label} kênh Telegram {sick}, đã reconnect, bot.pid={pid} sống.', dry)
+        notify(cfg, f'🔌 tg-watchdog: {label} kênh Telegram {sick}, đã reconnect, bot.pid={pid} sống.', dry, spec)
     else:
         log(f'{label}: reconnect FAILED: {result}')
         notify(cfg, f'⚠️ tg-watchdog: {label} kênh Telegram {sick}, reconnect KHÔNG thành công ({result}). '
-                    f'Vào pane {pane}: /mcp → {spec.get("mcp_name", MCP_NAME)} → Reconnect.', dry)
+                    f'Vào pane {pane}: /mcp → {spec.get("mcp_name", MCP_NAME)} → Reconnect.', dry, spec)
 
 
 def load_state(cfg):
