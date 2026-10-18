@@ -29,6 +29,7 @@ whose cwd equals "cwd". The token is read from notify.env_file
 import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 
 MCP_NAME = 'plugin:telegram:telegram'
+RECONNECT_WAIT_S = 90  # after Reconnect, how long to wait for a new pid with its own heartbeat
 ANSI = re.compile(r'\x1b\[([0-9;?]*)([A-Za-z])')
 RULE = re.compile(r'^─{20,}$')
 
@@ -356,7 +357,9 @@ def check(spec, cfg, st, dry):
     pid = None
     try:
         reconnect(pane, spec.get('mcp_name', MCP_NAME))
-        end = time.time() + 45
+        # The new server's first heartbeat comes after its first 30s long poll,
+        # plus `bun install` at start: 35-38s measured, so 45s was too tight.
+        end = time.time() + RECONNECT_WAIT_S
         while time.time() < end and not (pid := recovered()):
             time.sleep(1)
         result = next((l.strip(' ⎿') for l in screen(pane).split('\n')[::-1]

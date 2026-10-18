@@ -102,4 +102,5 @@ assert wd.health(d, proc, stale_s=180) == ('deaf', me)        # ...which ran out
 open(hb, 'w').write('not json')
 os.utime(os.path.join(d, 'bot.pid'), None)
 assert wd.health(d, proc, stale_s=180)[0] == 'ok'
+assert wd.RECONNECT_WAIT_S >= 90  # first heartbeat after Reconnect took 35-38s in the field
 print('tg-watchdog parsing: OK')
