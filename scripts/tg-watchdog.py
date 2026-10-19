@@ -567,8 +567,9 @@ def main():
     while True:
         st = load_state(cfg)
         if cfg.get('update_every_s') and time.time() - st.get('_update_at', 0) >= cfg['update_every_s']:
-            st['_update_at'] = time.time()
-            save_state(cfg, st)
+            if not a.dry_run:
+                st['_update_at'] = time.time()
+                save_state(cfg, st)
             run_update(cfg, st, a.dry_run)
         if cfg.get('reload_on_update'):
             cfg['_disk_version'] = check_overlay(cfg, st, a.dry_run)
