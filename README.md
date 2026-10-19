@@ -143,6 +143,13 @@ python3 scripts/tg-watchdog.py --config watchdog.json                    # loop,
 
 The config format is in the script's docstring. Servers older than v0.0.7-plus.5 write no heartbeat; for them only a dead `bot.pid` is detected.
 
+### Push to the repo, every bot follows
+
+The channel has to stay `telegram@claude-plugins-official`: during the channels preview `--channels` only registers allowlisted plugins, and a plugin from your own marketplace needs `--dangerously-load-development-channels`, which shows a confirmation dialog at every start. So updates keep using the overlay:
+
+- `scripts/tgp-update.sh`: `git pull --ff-only`, then `install-overlay.sh --apply` when the installed server.ts is upstream or an older fork build. Exit 3 (nothing written) when it is neither: the official plugin updated itself or was edited; merge upstream first (RESTORE.md).
+- In the watchdog config: `"update_every_s": 3600` runs it from the loop; `"reload_on_update": true` reconnects a live server whose `start v…` in `server.log` differs from the overlay on disk, once its agent is idle with an empty prompt (busy agents are retried next round; 3 failed tries per version, then it only reports). An agent with `"manual": true` (e.g. the main session) is never typed into: dead, deaf or outdated channels are only reported. A plugin dir without `.telegram-plus` is reported, never overwritten.
+
 ## Tests and audit (offline, no real token)
 
 ```bash

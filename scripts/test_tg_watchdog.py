@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline checks for tg-watchdog.py screen parsing. Fixtures are copied from
 real claude TUI screens (herdr pane read). Run: python3 scripts/test_tg_watchdog.py"""
-import importlib.util, os, sys
+import importlib.util, json, os, sys
 
 spec = importlib.util.spec_from_file_location('wd', os.path.join(os.path.dirname(__file__), 'tg-watchdog.py'))
 wd = importlib.util.module_from_spec(spec)
@@ -122,5 +122,74 @@ assert not wd.same_item('plugin:playwright:pl…', 'plugin:telegram:telegram')
 assert not wd.same_item('plu…', 'plugin:telegram:telegram')  # too short to trust
 assert not wd.same_item('plugin:telegram:tel', 'plugin:telegram:telegram')  # cut without … is another name
 assert not wd.same_item(None, 'Reconnect')
+
+# ---- updates: versions, plugin dir, reload decisions (no herdr, no network)
+LOG = """2026-10-19T05:50:37.168Z pid=650254 start v0.0.7-plus.5 ppid=1 client=2 claude mode=poll
+2026-10-19T05:55:19.074Z pid=662348 start v0.0.7-plus.5 ppid=3 client=4 claude mode=send-only
+2026-10-19T06:56:11.723Z pid=852898 start v0.0.7-plus.6 ppid=5 client=6 claude mode=poll
+2026-10-19T06:56:12.339Z pid=852898 polling as @x_bot
+"""
+assert wd.running_version(LOG, 852898) == '0.0.7-plus.6'
+assert wd.running_version(LOG, 650254) == '0.0.7-plus.5'
+assert wd.running_version(LOG, 52898) is None  # pid must match whole
+assert wd.running_version('', 1) is None
+assert wd.overlay_version('version=0.0.7-plus.6 fork=bdf046b base=upstream-0.0.7 installed=0.0.7 at=x\n') == '0.0.7-plus.6'
+assert wd.overlay_version('') is None
+reg = {'version': 2, 'plugins': {'telegram@claude-plugins-official': [
+    {'scope': 'local', 'projectPath': '/p', 'installPath': '/local'}, {'scope': 'user', 'installPath': '/user'}]}}
+assert wd.plugin_dir({}, reg) == '/user'
+assert wd.plugin_dir({'plugin_dir': '/cfg'}, reg) == '/cfg'
+assert wd.plugin_dir({}, {'plugins': {}}) is None
+
+calls = {'reconnect': [], 'notify': []}
+wd.save_state = lambda cfg, st: None
+wd.notify = lambda cfg, text, dry, spec=None: calls['notify'].append(text)
+versions = {}
+wd.read_running_version = lambda state_dir, pid: versions.get(pid)
+def fake_try(spec, cfg, st, agent, label, old, dry, wait_idle):
+    calls['reconnect'].append((label, wait_idle))
+    return fake_try.result
+wd.try_reconnect = fake_try
+cfg = {'cooldown_s': 600, '_disk_version': '0.0.7-plus.6'}
+agent = {'pane_id': 'w1:p1'}
+def reload(spec, pid, st):
+    for k in calls: calls[k].clear()
+    wd.maybe_reload(spec, cfg, st, agent, spec['label'], '/sd', pid, False)
+
+versions.update({10: '0.0.7-plus.6', 11: '0.0.7-plus.5', 12: '0.0.7-plus.6', 13: '0.0.7-plus.5'})
+reload({'label': 'a'}, 10, {})  # same version: nothing
+assert calls == {'reconnect': [], 'notify': []}
+fake_try.result = (12, 'Reconnected to plugin:telegram:telegram.')
+reload({'label': 'a'}, 11, {})  # older: reconnect without waiting for a busy agent, report success
+assert calls['reconnect'] == [('a', False)] and 'đã lên telegram-plus v0.0.7-plus.6' in calls['notify'][0]
+st = {}
+reload({'label': 'main', 'manual': True}, 11, st)  # manual: told once, never typed into
+assert calls['reconnect'] == [] and len(calls['notify']) == 1 and 'Khi tiện' in calls['notify'][0]
+reload({'label': 'main', 'manual': True}, 11, st)
+assert calls['notify'] == []
+fake_try.result = (13, 'Failed to reconnect')  # new pid but still old version: a failure
+st = {}
+for _ in range(3):
+    reload({'label': 'b'}, 11, st)
+    assert len(calls['reconnect']) == 1 and 'KHÔNG thành công' in calls['notify'][0]
+reload({'label': 'b'}, 11, st)  # gave up for this version after 3 tries
+assert calls == {'reconnect': [], 'notify': []}
+fake_try.result = None  # skipped (busy, cooldown): nothing said
+reload({'label': 'c'}, 11, {})
+assert calls['notify'] == []
+
+st = {}
+wd.notify_once({'cooldown_s': 600}, st, 'k', 'x', True)
+assert st == {}  # dry run: logged, not recorded
+wd.notify_once({'cooldown_s': 600}, st, 'k', 'x', False)
+assert 'k' in st
+
+# manual agent whose channel died: reported, no reconnect
+wd.herdr = lambda *a, **k: json.dumps({'result': {'agents': [{'agent': 'claude', 'name': 'main', 'pane_id': 'w4:pD'}]}})
+wd.health = lambda *a, **k: ('dead', None)
+for k in calls: calls[k].clear()
+wd.check({'label': 'main', 'herdr': 'main', 'state_dir': '/tmp', 'manual': True},
+         {'heartbeat_stale_s': 180, 'confirm_s': 0, 'cooldown_s': 600}, {}, False)
+assert calls['reconnect'] == [] and 'không tự Reconnect' in calls['notify'][0]
 
 print('tg-watchdog parsing: OK')
