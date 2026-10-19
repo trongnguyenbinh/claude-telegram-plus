@@ -235,8 +235,21 @@ def wait_for(pane, header, timeout=8.0):
     raise Abort(f'"{header}" did not appear')
 
 
+def same_item(shown, target):
+    """A narrow pane cuts long names: 'plugin:telegram:te…' is target when it is
+    a prefix of it (at least 8 chars kept)."""
+    if shown is None or shown == target:
+        return shown == target
+    cut = shown.rstrip()
+    for tail in ('…', '...'):
+        if cut.endswith(tail):
+            cut = cut[:-len(tail)].rstrip()
+            return len(cut) >= 8 and target.startswith(cut)
+    return False
+
+
 def walk(pane, header, target, current, limit=80):
-    """Arrow through a menu until current(lines) == target, re-reading the
+    """Arrow through a menu until current(lines) is target, re-reading the
     screen after every key. Down first, then up; never assumes positions."""
     for key in ('down', 'up'):
         prev = None
@@ -245,7 +258,7 @@ def walk(pane, header, target, current, limit=80):
             if not lines:
                 raise Abort(f'menu "{header}" closed')
             now = current(lines)
-            if now == target:
+            if same_item(now, target):
                 return
             if now == prev:
                 break  # hit the end in this direction

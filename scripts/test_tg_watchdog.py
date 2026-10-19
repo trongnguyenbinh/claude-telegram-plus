@@ -112,4 +112,15 @@ with contextlib.redirect_stderr(buf):
     wd.notify({}, 'z', True)
 out = buf.getvalue()
 assert 'via /lead/.env: x' in out and 'via /main/.env: y' in out and ': z' not in out, out
+# narrow pane: /mcp cuts the name with "…" (company machine 19/10)
+narrow = servers.replace('  ❯ ✘ plugin:telegram:telegram', '  ❯ ✘ plugin:telegram:te…')
+assert wd.cursor_row(wd.section(narrow, r'Manage MCP servers')) == 'plugin:telegram:te…'
+assert wd.same_item('plugin:telegram:te…', 'plugin:telegram:telegram')
+assert wd.same_item('plugin:telegram:te...', 'plugin:telegram:telegram')
+assert wd.same_item('plugin:telegram:telegram', 'plugin:telegram:telegram')
+assert not wd.same_item('plugin:playwright:pl…', 'plugin:telegram:telegram')
+assert not wd.same_item('plu…', 'plugin:telegram:telegram')  # too short to trust
+assert not wd.same_item('plugin:telegram:tel', 'plugin:telegram:telegram')  # cut without … is another name
+assert not wd.same_item(None, 'Reconnect')
+
 print('tg-watchdog parsing: OK')
