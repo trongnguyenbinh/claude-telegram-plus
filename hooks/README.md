@@ -47,7 +47,7 @@ that has the plugin enabled. It runs with the session's environment, so it uses 
 session to load it (`/mcp` Reconnect does not load hooks).
 
 In a session with no Telegram channel it exits after reading the transcript tail
-(about 30-50 ms per tool call, mostly Python start).
+(measured 30-50 ms per tool call, mostly Python start; `urllib` is imported only when a draft is sent).
 
 ### Older manual install
 

@@ -16,7 +16,6 @@ import os
 import re
 import sys
 import time
-import urllib.request
 
 MIN_INTERVAL = 1.0      # seconds between two drafts
 NET_TIMEOUT = 2.0       # seconds
@@ -202,6 +201,7 @@ def main():
         return
     lines = st['steps']
     text = '⏳ Đang làm:\n' + '\n'.join(('▸ ' if i == len(lines) - 1 else '· ') + s for i, s in enumerate(lines))
+    import urllib.request  # here, not at the top: ~60 ms of import that non-Telegram turns skip
     root = (os.environ.get('TELEGRAM_API_ROOT') or 'https://api.telegram.org').rstrip('/')
     req = urllib.request.Request(
         f'{root}/bot{token}/sendMessageDraft',
