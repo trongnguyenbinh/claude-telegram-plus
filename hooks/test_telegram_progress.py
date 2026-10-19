@@ -91,15 +91,21 @@ class HookTest(unittest.TestCase):
             for e in entries:
                 f.write(json.dumps(e, ensure_ascii=False, separators=(',', ':')) + '\n')
 
-    def run_hook(self, tool='Bash', tool_input=None, api=None, raw_stdin=None):
-        payload = raw_stdin if raw_stdin is not None else json.dumps({
-            'hook_event_name': 'PreToolUse', 'transcript_path': self.transcript,
-            'tool_name': tool, 'tool_input': tool_input if tool_input is not None else {'command': 'ls', 'description': 'Kiểm agent rnd'},
-        })
-        env = {'PATH': os.environ.get('PATH', ''), 'HOME': self.dir.name,
-               'TELEGRAM_STATE_DIR': self.state, 'TELEGRAM_API_ROOT': api or self.api}
+    def payload(self, tool='Bash', tool_input=None, tool_use_id=None):
+        d = {'hook_event_name': 'PreToolUse', 'transcript_path': self.transcript, 'tool_name': tool,
+             'tool_input': tool_input if tool_input is not None else {'command': 'ls', 'description': 'Kiểm agent rnd'}}
+        if tool_use_id:
+            d['tool_use_id'] = tool_use_id
+        return json.dumps(d)
+
+    def env(self, api=None):
+        return {'PATH': os.environ.get('PATH', ''), 'HOME': self.dir.name,
+                'TELEGRAM_STATE_DIR': self.state, 'TELEGRAM_API_ROOT': api or self.api}
+
+    def run_hook(self, tool='Bash', tool_input=None, api=None, raw_stdin=None, tool_use_id=None):
+        payload = raw_stdin if raw_stdin is not None else self.payload(tool, tool_input, tool_use_id)
         t = time.time()
-        p = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True, env=env, timeout=10)
+        p = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True, env=self.env(api), timeout=10)
         return p, time.time() - t
 
     def test_telegram_turn_sends_draft(self):
@@ -152,6 +158,21 @@ class HookTest(unittest.TestCase):
         self.assertIn('Đọc file: server.ts', text)
         self.assertIn('Sửa file: README.md', text)  # throttled step still shows up later
         self.assertIn('▸ Agent: Soát log herdr', text)
+
+    def test_same_call_from_two_hook_copies_counts_once(self):
+        # plugin hooks.json + an old settings.local.json entry both fire, in parallel
+        self.write(channel_turn(DM, 30))
+        procs = [subprocess.Popen([sys.executable, HOOK], stdin=subprocess.PIPE, env=self.env(), text=True)
+                 for _ in range(2)]
+        for p in procs:
+            p.communicate(self.payload('Read', {'file_path': '/x/a.txt'}, 'toolu_A'), timeout=10)
+        self.assertEqual(len(Mock.calls), 1)
+        time.sleep(1.1)
+        self.run_hook(tool='Read', tool_input={'file_path': '/x/b.txt'}, tool_use_id='toolu_B')
+        self.run_hook(tool='Read', tool_input={'file_path': '/x/b.txt'}, tool_use_id='toolu_B')
+        self.assertEqual(len(Mock.calls), 2)
+        self.assertEqual(Mock.calls[1][1]['text'].count('a.txt'), 1)
+        self.assertEqual(Mock.calls[1][1]['text'].count('b.txt'), 1)
 
     def test_new_message_resets_draft(self):
         self.write(channel_turn(DM, 20))

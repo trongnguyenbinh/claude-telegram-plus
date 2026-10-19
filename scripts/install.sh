@@ -1,9 +1,9 @@
 #!/bin/sh
 # One-command install of telegram-plus. Safe to re-run.
 #
-#   scripts/install.sh                                   # overlay the fork onto the installed plugin
-#   scripts/install.sh --project DIR [--state-dir DIR]   # also turn on the progress hook +
-#                                                        # typewriter for that project
+#   scripts/install.sh                                   # overlay the fork (server, skill, progress
+#                                                        # hook) onto the installed plugin
+#   scripts/install.sh --project DIR [--state-dir DIR]   # also turn on the typewriter for that project
 #
 # Needs the official plugin first: /plugin install telegram@claude-plugins-official
 # Undo: the rollback command printed below (scripts/install-overlay.sh --rollback ...).
@@ -45,7 +45,7 @@ then
 fi
 echo "ok: found in $REGISTRY"
 
-echo "== 3/4 overlay server.ts"
+echo "== 3/4 overlay server.ts, skill, hooks"
 "$REPO/scripts/install-overlay.sh"
 "$REPO/scripts/install-overlay.sh" --apply
 last=$(ls -1d "$CLAUDE_DIR/plugins/telegram-plus-backups"/*/ 2>/dev/null | tail -n 1)
@@ -58,12 +58,12 @@ echo "== 4/4 project settings"
 if [ -n "$PROJECT" ]; then
   python3 "$REPO/scripts/enable-plus.py" "$PROJECT" "${STATE_DIR:-${TELEGRAM_STATE_DIR:-$CLAUDE_DIR/channels/telegram}}"
 else
-  echo "skipped (pass --project DIR to turn on the progress hook + typewriter)"
+  echo "skipped (pass --project DIR to turn on the typewriter)"
 fi
 
 echo
-echo "Done. Restart each Telegram session so it loads the new server (and hooks):"
+echo "Done. Restart each Telegram session so it loads the new server, skill and hooks:"
 echo
 echo "  claude --channels plugin:telegram@claude-plugins-official"
 echo
-echo "To keep a conversation, add --resume <session id>. /mcp reconnect reloads the server only, not hooks."
+echo "To keep a conversation, add --resume <session id>. /mcp reconnect reloads the server only, not the skill or hooks."

@@ -1,0 +1,17 @@
+{
+  "description": "telegram-plus: live 'Đang làm' draft in Telegram during a Telegram-originated turn",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/telegram-progress.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

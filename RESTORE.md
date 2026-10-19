@@ -63,12 +63,12 @@ spot. To see exactly what the fork changes:
 git diff upstream main -- server.ts
 ```
 
-## 3b. Progress hook (optional)
+## 3b. Skill and progress hook
 
-The hook lives in this repo (`hooks/telegram-progress.py`), not in the plugin cache, so a
-plugin update does not remove it. It stays installed as long as the `PreToolUse` entry is in
-each session's `.claude/settings.local.json`. See [hooks/README.md](./hooks/README.md) for
-the JSON to install it and the steps to remove it. If the repo moves, update the path in those entries.
+`install-overlay.sh --apply` also copies `skills/telegram-plus/` and `hooks/` (`hooks.json`,
+`telegram-progress.py`) into the plugin dir, so a plugin update drops them together with
+`server.ts`, and re-applying the overlay puts them back. Sessions load them at startup only.
+See [hooks/README.md](./hooks/README.md).
 
 ## 4. Fallback: run the fork as its own plugin
 

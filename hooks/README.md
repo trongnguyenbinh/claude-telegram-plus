@@ -27,6 +27,7 @@ Telegram draft (`sendMessageDraft`). Example:
 ## Safety
 
 - Always exits 0 and prints nothing, so it can never block or alter a tool call.
+- The step list is updated under a lock (`progress-hook.json.lock`) and each `tool_use_id` is counted once.
 - At most one draft per second per bot. The steps still accumulate, so a throttled
   step shows up in the next draft. State lives in `<state dir>/progress-hook.json`.
 - Network timeout 2s. Each step is cut to 80 chars, and token-, key- and
@@ -37,11 +38,25 @@ Telegram draft (`sendMessageDraft`). Example:
 - Cost: about 60 ms per tool call (Python start included), measured on a 463 MB transcript, because it reads
   only the tail.
 
-## Install (per session, in that project's `.claude/settings.local.json`)
+## Install
 
-Merge this into the file's `hooks` object. Set `TELEGRAM_STATE_DIR` to the same
-directory the session's telegram plugin uses. Omit it for the default
-`~/.claude/channels/telegram`.
+Nothing to do: `scripts/install-overlay.sh --apply` copies this script and
+[`hooks.json`](./hooks.json) into the plugin, which registers it for every session
+that has the plugin enabled. It runs with the session's environment, so it uses the
+`TELEGRAM_STATE_DIR` from the project's settings `env`, like the server. Restart the
+session to load it (`/mcp` Reconnect does not load hooks).
+
+In a session with no Telegram channel it exits after reading the transcript tail
+(about 30-50 ms per tool call, mostly Python start).
+
+### Older manual install
+
+Before the plugin shipped it, the hook was added per project to `.claude/settings.local.json`
+like this. Remove that entry after the session has restarted with the plugin copy: a running
+session picks up settings edits right away (file watcher) but loads plugin hooks only at
+startup, so removing it earlier stops the draft until the next restart. While both are
+registered both fire, and the hook counts each `tool_use_id` once, so the draft shows no
+duplicate steps.
 
 ```json
 {
@@ -62,12 +77,10 @@ directory the session's telegram plugin uses. Omit it for the default
 }
 ```
 
-Hooks in settings files are read at session start. Restart the session, or open
-`/hooks` to review, after editing.
 
 ## Remove
 
-Delete that `PreToolUse` entry from the settings file and restart the session.
+Roll back the overlay (`scripts/install-overlay.sh --rollback <backup>`) and restart the session.
 `progress-hook.json` in the state dir can be deleted at any time.
 
 ## Test (offline)

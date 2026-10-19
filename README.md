@@ -24,11 +24,11 @@ Needs `bun`, `python3`, `git`, and the official plugin already set up
    cd claude-telegram-plus
    ```
 
-2. Install (overlays the fork's `server.ts` onto the installed plugin, backs up the original, prints the rollback command; safe to re-run):
+2. Install (overlays the fork's `server.ts`, the `telegram-plus` skill and the progress hook onto the installed plugin, backs up the originals, prints the rollback command; safe to re-run):
 
    ```bash
    scripts/install.sh
-   # optional: also turn on the progress hook + typewriter for one project
+   # optional: also turn on the typewriter for one project
    scripts/install.sh --project /abs/path/to/project [--state-dir ~/.claude/channels/telegram]
    ```
 
@@ -39,7 +39,8 @@ Needs `bun`, `python3`, `git`, and the official plugin already set up
    ```
 
 Agents pick up a reply guideline (when to use rich messages, buttons, copy buttons, plain text)
-from the server's MCP instructions; nothing to configure. Details below.
+from the server's MCP instructions and from the `telegram-plus` skill (`skills/telegram-plus/SKILL.md`,
+loaded when Claude answers a Telegram message); nothing to configure. Details below.
 
 It adds Telegram Bot API 10.x features. **All of them are opt-in.** With none of the new
 arguments, every upstream tool sends the exact request it sent before:
@@ -59,7 +60,7 @@ arguments, every upstream tool sends the exact request it sent before:
 | `reply` `typewriter` (default from env `TELEGRAM_PLUS_TYPEWRITER=1`, off when unset): replays the first ~600 chars word by word in a draft (4-8 frames, ≤1.5s), then sends the real message unchanged | `sendMessageDraft` / `sendRichMessageDraft` | private chats, no files, not ephemeral; draft errors are ignored |
 | Welcome new group members: the server itself greets people who join an allowlisted group, using `<STATE_DIR>/welcome.json` (see below). Claude is not involved | `new_chat_members` service message, `sendMessage` + `text_mention` entities | allowlisted groups; works in privacy mode, no admin needed |
 | `TELEGRAM_API_ROOT` env | local Bot API server or the offline test mock | |
-| `hooks/telegram-progress.py` (optional Claude Code hook): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
+| `hooks/telegram-progress.py` (Claude Code hook, registered by the plugin's `hooks/hooks.json`): live draft of what the agent is doing during a Telegram turn | `sendMessageDraft` | private chats; see [hooks/README.md](./hooks/README.md) |
 
 ## Reply keyboard
 
@@ -128,7 +129,9 @@ Pass `keep_buttons: true` on `reply` / `edit_message` for a menu or pager meant 
 ## Install, restore, update
 
 `scripts/install.sh` runs the checks and `install-overlay.sh` for you. See [RESTORE.md](./RESTORE.md) for restore after a plugin update and rollback.
-By hand: `scripts/install-overlay.sh` (dry run), then `--apply`.
+By hand: `scripts/install-overlay.sh` (dry run), then `--apply`. It copies `server.ts`, `skills/telegram-plus/` and `hooks/{hooks.json,telegram-progress.py}`
+into the plugin dir (the upstream `access` and `configure` skills are left alone); backups and `--rollback` cover all of them.
+A new `server.ts` loads on `/mcp` Reconnect; the skill and hooks load only when the session restarts.
 
 ## Channel watchdog (herdr)
 
@@ -147,7 +150,7 @@ The config format is in the script's docstring. Servers older than v0.0.7-plus.5
 
 The channel has to stay `telegram@claude-plugins-official`: during the channels preview `--channels` only registers allowlisted plugins, and a plugin from your own marketplace needs `--dangerously-load-development-channels`, which shows a confirmation dialog at every start. So updates keep using the overlay:
 
-- `scripts/tgp-update.sh`: `git pull --ff-only`, then `install-overlay.sh --apply` when the installed server.ts is upstream or an older fork build. Exit 3 (nothing written) when it is neither: the official plugin updated itself or was edited; merge upstream first (RESTORE.md).
+- `scripts/tgp-update.sh`: `git pull --ff-only`, then `install-overlay.sh --apply` when the installed server.ts is upstream or an older fork build, or when only the skill/hook files changed. Exit 3 (nothing written) when it is neither: the official plugin updated itself or was edited; merge upstream first (RESTORE.md).
 - In the watchdog config: `"update_every_s": 3600` runs it from the loop; `"reload_on_update": true` reconnects a live server whose `start v…` in `server.log` differs from the overlay on disk, once its agent is idle with an empty prompt (busy agents are retried next round; 3 failed tries per version, then it only reports). An agent with `"manual": true` (e.g. the main session) is never typed into: dead, deaf or outdated channels are only reported. A plugin dir without `.telegram-plus` is reported, never overwritten.
 
 ## Tests and audit (offline, no real token)

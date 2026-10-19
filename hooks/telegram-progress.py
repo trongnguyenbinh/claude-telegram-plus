@@ -10,6 +10,7 @@ exit 0 silently. Never prints to stdout, so it can never change a tool decision.
 Env: TELEGRAM_STATE_DIR (default ~/.claude/channels/telegram, same as server.ts),
 TELEGRAM_API_ROOT (default https://api.telegram.org, the tests point it at a mock).
 """
+import fcntl
 import json
 import os
 import re
@@ -166,26 +167,33 @@ def main():
         if chat_id not in (json.load(f).get('allowFrom') or []):
             return
 
-    # Throttle + rolling step list, per state dir (one bot).
-    # ponytail: read-compare-write without a lock; two parallel tool calls can
-    # both send once. Harmless for a preview. Add fcntl.flock if it ever matters.
+    # Throttle + rolling step list, per state dir (one bot). Locked, and each
+    # tool_use_id counted once: the plugin's hooks.json and an older copy in a
+    # project's settings can both fire for the same call, in parallel.
     sfile = os.path.join(sd, 'progress-hook.json')
-    try:
-        with open(sfile) as f:
-            st = json.load(f)
-    except (OSError, ValueError):
-        st = {}
-    if st.get('draft_id') != int(message_id):
-        st = {'draft_id': int(message_id), 'steps': [], 'last': 0}
-    st['steps'] = (st['steps'] + [short(step)])[-KEEP_STEPS:]
-    now = time.time()
-    due = now - st.get('last', 0) >= MIN_INTERVAL
-    if due:
-        st['last'] = now
-    tmp = sfile + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(st, f)
-    os.replace(tmp, sfile)
+    tool_use_id = data.get('tool_use_id')
+    with open(sfile + '.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(sfile) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            st = {}
+        if st.get('draft_id') != int(message_id):
+            st = {'draft_id': int(message_id), 'steps': [], 'last': 0}
+        if tool_use_id:
+            if tool_use_id in st.get('ids', []):
+                return
+            st['ids'] = (st.get('ids', []) + [tool_use_id])[-20:]
+        st['steps'] = (st['steps'] + [short(step)])[-KEEP_STEPS:]
+        now = time.time()
+        due = now - st.get('last', 0) >= MIN_INTERVAL
+        if due:
+            st['last'] = now
+        tmp = sfile + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(st, f)
+        os.replace(tmp, sfile)
     if not due:
         return
 
