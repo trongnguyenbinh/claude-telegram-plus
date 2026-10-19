@@ -113,7 +113,7 @@ What the presser sees, so they know the bot got it:
 1. The press is handed to Claude first. Only then the toast `✓ <button label>` shows. If it could not reach Claude: `⚠️ Not delivered to Claude, try again later` and the keyboard stays.
 2. The keyboard collapses to one button `✅ <label>`, so the choice stays visible in the chat and can't be sent twice. Pressing it again shows `Already chosen`. The message text is not touched, so rich and MarkdownV2 messages keep their formatting.
 3. A second press on the same message within 10 minutes (a fast double tap, before the collapse lands) is not delivered again: `Already received`.
-4. A typing indicator starts right away.
+4. A typing indicator starts right away and stays up until the reply (see below).
 
 Pass `keep_buttons: true` on `reply` / `edit_message` for a menu or pager meant to be pressed again: toast only, no collapse, every press delivered. Toasts are English, or Vietnamese when the presser's Telegram app language is `vi`. Permission-relay buttons (`perm:`) keep the upstream behaviour.
 
@@ -239,6 +239,10 @@ Quick reference: IDs are **numeric user IDs** (get yours from [@userinfobot](htt
 
 Inbound messages trigger a typing indicator automatically — Telegram shows
 "botname is typing…" while the assistant works on a response.
+
+telegram-plus keeps it up: Telegram drops a chat action after ~5 s, so it is resent every 4 s until the bot
+sends a `reply` to that chat, 10 min pass, or the server stops (`edit_message`, `react`, `stream_draft` don't stop it;
+a new message resets the 10 min; a 429 waits `retry_after`). Knobs: `TELEGRAM_PLUS_TYPING_EVERY_MS`, `TELEGRAM_PLUS_TYPING_MAX_MS`.
 
 ## Photos
 

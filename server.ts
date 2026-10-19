@@ -56,7 +56,7 @@ const INBOX_DIR = join(STATE_DIR, 'inbox')
 const PID_FILE = join(STATE_DIR, 'bot.pid')
 
 // telegram-plus: plus build, logged at start so a running server can be matched to a release.
-const PLUS_VERSION = '0.0.7-plus.5'
+const PLUS_VERSION = '0.0.7-plus.6'
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
 
 // telegram-plus: lifecycle log in STATE_DIR/server.log (start, mode, polling,
@@ -914,6 +914,45 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }))
 
+// telegram-plus: Telegram shows a chat action for ~5s, so "typing…" vanished
+// long before Claude answered. Once a message or press is handed to Claude,
+// resend typing every 4s until the bot sends a message to that chat (reply),
+// a 10 min cap, or shutdown. One loop per chat; a new message resets the cap.
+// edit_message / react / stream_draft are progress, they don't stop it.
+const TYPING_EVERY_MS = Number(process.env.TELEGRAM_PLUS_TYPING_EVERY_MS ?? 4000)
+const TYPING_MAX_MS = Number(process.env.TELEGRAM_PLUS_TYPING_MAX_MS ?? 10 * 60 * 1000)
+type TypingLoop = { timer: ReturnType<typeof setInterval>; until: number; pausedUntil: number }
+const typingLoops = new Map<string, TypingLoop>()
+
+function sendTyping(chatId: string, loop: TypingLoop): void {
+  const now = Date.now()
+  if (now >= loop.until) return stopTyping(chatId)
+  if (now < loop.pausedUntil) return
+  void bot.api.sendChatAction(chatId, 'typing').catch(err => {
+    // 429: wait out retry_after instead of hammering; anything else is swallowed as before
+    if (err instanceof GrammyError && err.error_code === 429) {
+      loop.pausedUntil = Date.now() + (err.parameters?.retry_after ?? 5) * 1000
+    }
+  })
+}
+
+function startTyping(chatId: string): void {
+  let loop = typingLoops.get(chatId)
+  if (loop) loop.until = Date.now() + TYPING_MAX_MS
+  else {
+    loop = { timer: setInterval(() => sendTyping(chatId, loop!), TYPING_EVERY_MS), until: Date.now() + TYPING_MAX_MS, pausedUntil: 0 }
+    typingLoops.set(chatId, loop)
+  }
+  sendTyping(chatId, loop)
+}
+
+function stopTyping(chatId: string): void {
+  const loop = typingLoops.get(chatId)
+  if (!loop) return
+  clearInterval(loop.timer)
+  typingLoops.delete(chatId)
+}
+
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   try {
@@ -1016,6 +1055,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           }
         }
 
+        stopTyping(String(chat_id))
         const label = args.ephemeral_for != null ? 'ephemeral ' : ''
         const result =
           sentIds.length === 1
@@ -1148,6 +1188,7 @@ function shutdown(reason: string): void {
   if (shuttingDown) return
   shuttingDown = true
   slog(`shutting down: ${reason} (ppid=${process.ppid})`)
+  for (const chatId of [...typingLoops.keys()]) stopTyping(chatId)
   try {
     if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
   } catch {}
@@ -1347,7 +1388,7 @@ async function handleButtonPress(ctx: Context, value: string): Promise<void> {
       reply_markup: { inline_keyboard: [[{ text: `✅ ${label}`, callback_data: USED_CB }]] },
     }).catch(() => {}) // not modified / too old / no rights: the toast already told them
   }
-  void bot.api.sendChatAction(chatId, 'typing').catch(() => {})
+  startTyping(chatId)
 }
 
 // telegram-plus: the user pressed Stop on a stream_draft preview
@@ -1652,8 +1693,9 @@ async function handleInbound(
     return
   }
 
-  // Typing indicator — signals "processing" until we reply (or ~5s elapses).
-  void bot.api.sendChatAction(chat_id, 'typing').catch(() => {})
+  // Typing indicator — signals "processing" until we reply (telegram-plus:
+  // repeated every 4s, see startTyping).
+  startTyping(chat_id)
 
   // Ack reaction — lets the user know we're processing. Fire-and-forget.
   // Telegram only accepts a fixed emoji whitelist — if the user configures
@@ -1692,6 +1734,7 @@ async function handleInbound(
       },
     },
   }).catch(err => {
+    stopTyping(chat_id)
     process.stderr.write(`telegram channel: failed to deliver inbound to Claude: ${err}\n`)
   })
 }

@@ -17,7 +17,7 @@ export type Call = { method: string; body: Record<string, any>; at: number }
 // {delayMs} to answer late.
 export type DraftBehaviour = (body: Record<string, any>) => { fail?: boolean; delayMs?: number } | undefined
 // Per-test knob for any other method: return {code, description} to answer with that error.
-export type ApiBehaviour = (method: string, body: Record<string, any>) => { code: number; description: string } | undefined
+export type ApiBehaviour = (method: string, body: Record<string, any>) => { code: number; description: string; parameters?: Record<string, unknown> } | undefined
 
 // setup runs on the state dir before server.ts starts; ready:'connected' skips
 // waiting for setMyCommands (a send-only server never polls).
@@ -61,7 +61,7 @@ export async function startHarness(
       }
       calls.push({ method, body, at: Date.now() })
       const fail = knobs.api?.(method, body)
-      if (fail) return Response.json({ ok: false, error_code: fail.code, description: fail.description }, { status: fail.code })
+      if (fail) return Response.json({ ok: false, error_code: fail.code, description: fail.description, ...(fail.parameters ? { parameters: fail.parameters } : {}) }, { status: fail.code })
       switch (method) {
         case 'getMe':
           return reply({ id: 999, is_bot: true, first_name: 'Test', username: 'test_plus_bot' })
