@@ -441,6 +441,9 @@ def check(spec, cfg, st, dry):
         notify_once(cfg, st, f'{label}:conflict', f'⚠️ tg-watchdog: {label} bị 409 Conflict: có poller khác giữ token bot (máy hoặc session khác). '
                     f'Reconnect không giúp được; tìm tiến trình bun server.ts thừa.', dry, spec)
         return
+    if kind == 'deaf' and time.time() < cfg.get('_wake_grace_until', 0):
+        log(f'{label}: heartbeat stale but the machine just woke from sleep, re-checking next round')
+        return
     what = 'bot.pid missing or dead' if kind == 'dead' else f'deaf: bot.pid={pid} alive but no getUpdates for >{stale_s}s'
     log(f'{label}: {what}, confirming in {cfg["confirm_s"]}s')
     time.sleep(cfg['confirm_s'])
@@ -564,7 +567,15 @@ def main():
     cfg = {'interval_s': 60, 'cooldown_s': 600, 'confirm_s': 20, 'idle_wait_s': 600, 'heartbeat_stale_s': 180,
            'state_file': '~/.cache/tg-watchdog.json', **json.load(open(a.config))}
     cfg['state_file'] = os.path.expanduser(cfg['state_file'])
+    wall, mono = time.time(), time.monotonic()
     while True:
+        # Wall clock runs through system sleep, monotonic does not (macOS/Linux): the gap is time spent asleep.
+        # Heartbeats go stale while asleep, so give pollers a stale window after wake to reconnect before calling them deaf.
+        slept = (time.time() - wall) - (time.monotonic() - mono)
+        wall, mono = time.time(), time.monotonic()
+        if slept > 30:
+            log(f'machine slept ~{int(slept)}s, deaf checks paused {cfg["heartbeat_stale_s"]}s')
+            cfg['_wake_grace_until'] = wall + cfg['heartbeat_stale_s']
         st = load_state(cfg)
         if cfg.get('update_every_s') and time.time() - st.get('_update_at', 0) >= cfg['update_every_s']:
             if not a.dry_run:
