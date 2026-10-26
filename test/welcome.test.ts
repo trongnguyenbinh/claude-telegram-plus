@@ -57,7 +57,11 @@ test('one joiner: one message, name as text_mention, plain text (no parse_mode)'
   expect(w[0].body.text).toBe('Chào @lan_dev đến với nhóm!')
   expect(w[0].body.parse_mode).toBeUndefined()
   expect(w[0].body.entities).toEqual([{ type: 'text_mention', offset: 5, length: 8, user: { id: u.id, is_bot: false, first_name: 'Lan' } }])
-  expect(h.notes.length).toBe(notes) // Claude is not involved
+  // Claude also hears about the join, once, as a channel event it can act on.
+  const ev = h.notes.slice(notes)
+  expect(ev).toHaveLength(1)
+  expect(ev[0].params.content).toBe(`[SỰ KIỆN] Thành viên mới vào group: Lan (@lan_dev, user_id=${u.id})`)
+  expect(ev[0].params.meta).toMatchObject({ chat_id: String(GROUP), user_id: String(u.id), event: 'new_chat_members' })
 })
 
 test('no username: first_name; unicode offsets are UTF-16', async () => {

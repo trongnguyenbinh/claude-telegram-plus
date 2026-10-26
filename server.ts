@@ -1473,6 +1473,52 @@ async function flushWelcome(chatId: string): Promise<void> {
   })
 }
 
+// ---- router The DOTs (157, Edward DM 679-681): bao su kien thanh vien moi cho router,
+// roi next() de handler welcome cua telegram-plus ben duoi van chay.
+// New member join events. Unlike handleInbound's gate(), this does NOT apply
+// requireMention — a join event has no message text to mention in, and the
+// point is to notify the router unconditionally for allowlisted groups.
+// Still group-allowlisted the same way gate() does: re-read access.json fresh
+// (no cache) and require the chat to be a known group.
+bot.on('message:new_chat_members', async (ctx, next) => {
+  const chatType = ctx.chat?.type
+  if (chatType !== 'group' && chatType !== 'supergroup') return next()
+  const groupId = String(ctx.chat!.id)
+  const access = loadAccess()
+  const policy = access.groups[groupId]
+  if (!policy) return next() // same group gate as gate(): must be a known/allowed group
+
+  const chat_id = groupId
+  const msgId = ctx.message?.message_id
+
+  for (const member of ctx.message.new_chat_members) {
+    if (member.is_bot) continue // covers the bot itself and any other bot joining
+    if (bot.botInfo && member.id === bot.botInfo.id) continue // belt and suspenders
+
+    const nameParts = [member.first_name, member.last_name].filter(Boolean).join(' ')
+    const usernamePart = member.username ? `@${member.username}, ` : ''
+    const text = `[SỰ KIỆN] Thành viên mới vào group: ${nameParts} (${usernamePart}user_id=${member.id})`
+
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: text,
+        meta: {
+          chat_id,
+          ...(msgId != null ? { message_id: String(msgId) } : {}),
+          user: member.username ?? String(member.id),
+          user_id: String(member.id),
+          ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
+          event: 'new_chat_members',
+        },
+      },
+    }).catch(err => {
+      process.stderr.write(`telegram channel: failed to deliver new_chat_members event to Claude: ${err}\n`)
+    })
+  }
+  await next()
+})
+
 bot.on('message:new_chat_members', async ctx => {
   const chatId = String(ctx.chat.id)
   const access = loadAccess()
