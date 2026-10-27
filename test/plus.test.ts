@@ -15,7 +15,7 @@ const waitFor = (c: () => boolean, ms?: number) => h.waitFor(c, ms)
 test('lists upstream tools plus the new ones', async () => {
   const { tools } = await h.client.listTools()
   const names = tools.map(t => t.name).sort()
-  expect(names).toEqual(['delete_message', 'download_attachment', 'edit_message', 'react', 'reply', 'stream_draft'])
+  expect(names).toEqual(['crawl_sticker_set', 'delete_message', 'download_attachment', 'edit_message', 'react', 'reply', 'send_sticker', 'stream_draft'])
   const reply = tools.find(t => t.name === 'reply')!
   expect((reply.inputSchema as any).required).toEqual(['chat_id', 'text'])
   expect((reply.inputSchema as any).properties.format.enum).toEqual(['text', 'markdownv2', 'rich'])

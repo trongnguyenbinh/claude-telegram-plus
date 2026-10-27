@@ -53,6 +53,9 @@ if (!TOKEN) {
   process.exit(1)
 }
 const INBOX_DIR = join(STATE_DIR, 'inbox')
+// telegram-plus: local sticker library (crawl_sticker_set downloads here;
+// send_sticker can upload files from here so stickers work across bots).
+const STICKERS_DIR = join(STATE_DIR, 'stickers')
 const PID_FILE = join(STATE_DIR, 'bot.pid')
 
 // telegram-plus: plus build, logged at start so a running server can be matched to a release.
@@ -911,6 +914,31 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['chat_id', 'draft_id'],
       },
     },
+    {
+      name: 'send_sticker',
+      description: "Send a sticker to a Telegram chat. Pass EITHER sticker (a file_id valid for THIS bot, e.g. an inbound sticker's attachment_file_id or a file_id from crawl_sticker_set's index) OR file (an absolute path to a local .webp/.tgs/.webm sticker file to upload). file works on any bot; a file_id only works on the bot that obtained it.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string' },
+          sticker: { type: 'string', description: 'A sticker file_id valid for this bot.' },
+          file: { type: 'string', description: 'Absolute path to a local .webp/.tgs/.webm sticker file to upload.' },
+          reply_to: { type: 'string', description: 'message_id to quote-reply to (optional).' },
+        },
+        required: ['chat_id'],
+      },
+    },
+    {
+      name: 'crawl_sticker_set',
+      description: "Download a Telegram sticker set into the local sticker library for reuse. Give set_name, the set's short name (from an inbound sticker's set, or a t.me/addstickers/<name> link; a full link is accepted and trimmed). Saves each file to <state>/stickers/<set_name>/ plus index.json (emoji, file_id, file path). Reuse via send_sticker: the saved file works on any bot, the file_id only on this one.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          set_name: { type: 'string', description: "The sticker set short name (not the title)." },
+        },
+        required: ['set_name'],
+      },
+    },
   ],
 }))
 
@@ -1137,6 +1165,45 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           await bot.api.deleteMessage(chat_id, Number(args.message_id))
         }
         return { content: [{ type: 'text', text: `deleted (id: ${args.message_id})` }] }
+      }
+      case 'send_sticker': {
+        const chat_id = args.chat_id as string
+        assertAllowedChat(chat_id)
+        const stickerArg = args.sticker as string | undefined
+        const fileArg = args.file as string | undefined
+        if (!stickerArg && !fileArg) throw new Error('send_sticker needs either sticker (file_id) or file (path)')
+        const stickerInput: string | InputFile = fileArg ? new InputFile(fileArg) : (stickerArg as string)
+        const extra: { reply_parameters?: { message_id: number } } = {}
+        if (args.reply_to != null) extra.reply_parameters = { message_id: Number(args.reply_to) }
+        const sent = await bot.api.sendSticker(chat_id, stickerInput, extra)
+        return { content: [{ type: 'text', text: `sticker sent (id: ${sent.message_id})` }] }
+      }
+      case 'crawl_sticker_set': {
+        const setName = (args.set_name as string).replace(/^.*addstickers\//, '').replace(/[?#].*$/, '').trim()
+        const safeName = setName.replace(/[^a-zA-Z0-9_-]/g, '')
+        if (!safeName) throw new Error('invalid set_name')
+        const set = await bot.api.getStickerSet(setName)
+        const dir = join(STICKERS_DIR, safeName)
+        mkdirSync(dir, { recursive: true })
+        const index: Array<{ i: number; emoji: string; file_id: string; file: string }> = []
+        let saved = 0, failed = 0
+        for (let i = 0; i < set.stickers.length; i++) {
+          const s = set.stickers[i]
+          try {
+            const f = await bot.api.getFile(s.file_id)
+            if (!f.file_path) { failed++; continue }
+            const res = await fetch(`${API_ROOT}/file/bot${TOKEN}/${f.file_path}`)
+            if (!res.ok) { failed++; continue }
+            const rawExt = f.file_path.includes('.') ? f.file_path.split('.').pop()! : 'webp'
+            const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'webp'
+            const fp = join(dir, `${String(i).padStart(3, '0')}.${ext}`)
+            writeFileSync(fp, Buffer.from(await res.arrayBuffer()))
+            index.push({ i, emoji: s.emoji ?? '', file_id: s.file_id, file: fp })
+            saved++
+          } catch { failed++ }
+        }
+        writeFileSync(join(dir, 'index.json'), JSON.stringify({ set: setName, title: set.title, count: set.stickers.length, saved, stickers: index }, null, 2))
+        return { content: [{ type: 'text', text: `crawled "${set.title}" (${setName}): ${saved}/${set.stickers.length} saved${failed ? `, ${failed} failed` : ''} to ${dir} (index.json)` }] }
       }
       case 'stream_draft': {
         const chat_id = args.chat_id as string
