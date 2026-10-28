@@ -53,11 +53,23 @@ test('upstream reply options keep their shape (reply_to + markdownv2)', async ()
 })
 
 test('format rich goes through sendRichMessage', async () => {
-  const md = '## Plan\n- [ ] a\n| x | y |\n|--|--|\n| 1 | 2 |'
+  // Table already block-separated by a blank line: passes through untouched.
+  const md = '## Plan\n- [ ] a\n\n| x | y |\n|--|--|\n| 1 | 2 |'
   const r = await call('reply', { chat_id: String(DM), text: md, format: 'rich' })
   expect(r.isError).toBe(false)
   expect(r.sent.map(c => c.method)).toEqual(['sendRichMessage'])
   expect(r.sent[0].body).toEqual({ chat_id: String(DM), rich_message: { markdown: md } })
+})
+
+test('rich inserts a blank line before a table glued to text', async () => {
+  // The bug: "**Khác**\n| a | b |" renders as raw pipes. Fix adds the blank line.
+  const glued = '**Khác**\n| a | b |\n|---|---|\n| 1 | 2 |'
+  const r = await call('reply', { chat_id: String(DM), text: glued, format: 'rich' })
+  expect(r.isError).toBe(false)
+  expect(r.sent[0].body).toEqual({
+    chat_id: String(DM),
+    rich_message: { markdown: '**Khác**\n\n| a | b |\n|---|---|\n| 1 | 2 |' },
+  })
 })
 
 test('rich text is chunked at 32768, plain text at 4096', async () => {

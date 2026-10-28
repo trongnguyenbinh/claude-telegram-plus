@@ -447,6 +447,32 @@ function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[
   return out
 }
 
+// Rich Messages render a GFM table only when it opens a block, i.e. a blank line
+// sits before the header row. Agents routinely glue a table straight under a
+// label (e.g. "**Khác**\n| a | b |"); the renderer then bails and prints the raw
+// pipes with every row collapsed onto one line (single newlines become spaces).
+// Insert the missing blank line before any table header glued to preceding text.
+// (Fix only: never drops or rewrites the table, so callers keep sending tables.)
+const TABLE_SEP_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+function normalizeRichMarkdown(md: string): string {
+  if (!md.includes('|')) return md
+  const lines = md.split('\n')
+  const out: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i]
+    const next = lines[i + 1] ?? ''
+    // A header row has a pipe and is followed by a column-separator row.
+    const isHeader = cur.includes('|') && next.includes('-') && TABLE_SEP_RE.test(next)
+    if (isHeader && out.length) {
+      const prev = out[out.length - 1]
+      // Glued to a non-blank line that is not itself a table row -> add a blank.
+      if (prev.trim() !== '' && !prev.includes('|')) out.push('')
+    }
+    out.push(cur)
+  }
+  return out.join('\n')
+}
+
 // .jpg/.jpeg/.png/.gif/.webp go as photos (Telegram compresses + shows inline);
 // everything else goes as documents (raw file, no compression).
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
@@ -1010,7 +1036,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           : Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
-        const chunks = chunk(text, limit, mode)
+        const chunks = chunk(rich ? normalizeRichMarkdown(text) : text, limit, mode)
         const sentIds: number[] = []
 
         // telegram-plus extras; all empty unless the caller passed them.
@@ -1126,7 +1152,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           const body = {
             chat_id: args.chat_id as string,
             ...(editFormat === 'rich'
-              ? { rich_message: { markdown: args.text as string } }
+              ? { rich_message: { markdown: normalizeRichMarkdown(args.text as string) } }
               : { text: args.text as string, ...(editParseMode ? { parse_mode: editParseMode } : {}) }),
             ...(keyboard ? { reply_markup: keyboard } : {}),
           }
@@ -1220,7 +1246,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         // Rich drafts need content; an empty draft is the plain 'Thinking…' placeholder.
         if (fmt === 'rich' && text) {
-          await bot.api.raw.sendRichMessageDraft({ ...common, rich_message: { markdown: text } } as never)
+          await bot.api.raw.sendRichMessageDraft({ ...common, rich_message: { markdown: normalizeRichMarkdown(text) } } as never)
         } else {
           await bot.api.raw.sendMessageDraft({
             ...common,
